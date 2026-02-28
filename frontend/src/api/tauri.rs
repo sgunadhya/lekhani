@@ -1,7 +1,7 @@
 use crate::api::dto::{
-    CommitNarrativeInputRequest, DocumentFileDto, LlmStatusDto, NarrativeNudgeDto,
-    NarrativeSnapshotDto, ParseDescriptionRequest, PreviewNarrativeInputDto,
-    SaveDocumentRequest,
+    AssistantTurnDto, CommitNarrativeInputRequest, DocumentFileDto, LlmStatusDto,
+    NarrativeNudgeDto, NarrativeSnapshotDto, ParseDescriptionRequest, PreviewNarrativeInputDto,
+    SaveDocumentRequest, SyncDebugDto, WorkingMemoryDto,
     SaveScreenplayRequest, ScreenplayDto,
 };
 use gloo_utils::format::JsValueSerdeExt;
@@ -62,6 +62,20 @@ pub async fn get_screenplays() -> Result<Vec<ScreenplayDto>, String> {
 
 pub async fn get_llm_status() -> Result<LlmStatusDto, String> {
     let js_value = invoke_tauri("get_llm_status", Object::new().into()).await?;
+    js_value
+        .into_serde()
+        .map_err(|err| format!("Deserialize error: {err}"))
+}
+
+pub async fn get_sync_debug() -> Result<SyncDebugDto, String> {
+    let js_value = invoke_tauri("get_sync_debug", Object::new().into()).await?;
+    js_value
+        .into_serde()
+        .map_err(|err| format!("Deserialize error: {err}"))
+}
+
+pub async fn get_working_memory() -> Result<WorkingMemoryDto, String> {
+    let js_value = invoke_tauri("get_working_memory", Object::new().into()).await?;
     js_value
         .into_serde()
         .map_err(|err| format!("Deserialize error: {err}"))
@@ -135,12 +149,12 @@ pub async fn preview_narrative_input(
         .map_err(|err| format!("Deserialize error: {err}"))
 }
 
-pub async fn commit_narrative_input(
+pub async fn submit_assistant_turn(
     prompt: String,
-) -> Result<PreviewNarrativeInputDto, String> {
+) -> Result<AssistantTurnDto, String> {
     let args = CommitNarrativeInputRequest { prompt };
     let js_args = named_request_args(&args)?;
-    let js_value = invoke_tauri("commit_narrative_input", js_args).await?;
+    let js_value = invoke_tauri("submit_assistant_turn", js_args).await?;
     js_value
         .into_serde()
         .map_err(|err| format!("Deserialize error: {err}"))

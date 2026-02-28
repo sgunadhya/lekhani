@@ -1,39 +1,27 @@
-use crate::api::dto::{NarrativeChangeKindDto, NarrativeCommitTargetDto, PreviewNarrativeInputDto};
+use crate::api::dto::{
+    AssistantIntentDto, NarrativeChangeKindDto, NarrativeCommitTargetDto, PreviewNarrativeInputDto,
+    WorkingMemoryDto,
+};
 use crate::state::document::DocumentContext;
 use crate::state::narrative::{
-    create_commit_action, create_llm_status_resource, create_preview_resource,
+    create_llm_status_resource, create_preview_resource, create_turn_action, ChatMessage,
+    ChatRole, NarrativeChatContext,
 };
 use gloo_timers::callback::Timeout;
 use leptos::*;
 use std::cell::RefCell;
 use std::rc::Rc;
 
-#[derive(Clone, PartialEq)]
-enum ChatRole {
-    User,
-    Assistant,
-}
-
-#[derive(Clone, PartialEq)]
-struct ChatMessage {
-    role: ChatRole,
-    title: Option<String>,
-    body: String,
-}
-
 #[component]
 pub fn ChatInterface() -> impl IntoView {
     let document = use_context::<DocumentContext>().expect("document context should exist");
-    let (prompt, set_prompt) = create_signal(String::new());
+    let chat = use_context::<NarrativeChatContext>().expect("narrative chat context should exist");
+    let prompt = Signal::derive(move || chat.prompt.get());
+    let set_prompt = move |value: String| chat.prompt.set(value);
     let (debounced_prompt, set_debounced_prompt) = create_signal(String::new());
     let llm_status = create_llm_status_resource();
     let preview = create_preview_resource(debounced_prompt);
-    let commit_action = create_commit_action();
-    let (messages, set_messages) = create_signal(vec![ChatMessage {
-        role: ChatRole::Assistant,
-        title: Some("Lekhani".to_string()),
-        body: "Tell me about the story, a character, or a scene problem you are working through. I will turn that into structured narrative changes and help you keep moving.".to_string(),
-    }]);
+    let turn_action = create_turn_action();
     let debounce_handle: Rc<RefCell<Option<Timeout>>> = Rc::new(RefCell::new(None));
 
     Effect::new({
@@ -64,22 +52,25 @@ pub fn ChatInterface() -> impl IntoView {
         }
 
         let message = current_prompt.trim().to_string();
-        set_messages.update(|items| {
+        chat.messages.update(|items| {
             items.push(ChatMessage {
                 role: ChatRole::User,
                 title: None,
                 body: message.clone(),
             });
         });
-        set_prompt.set(String::new());
+        chat.prompt.set(String::new());
         set_debounced_prompt.set(String::new());
-        commit_action.dispatch(message);
+        turn_action.dispatch(message);
     };
 
     Effect::new(move |_| {
-        if let Some(Ok(committed)) = commit_action.value().get() {
+        if let Some(Ok(turn)) = turn_action.value().get() {
+            chat.working_memory.set(Some(turn.working_memory.clone()));
+            chat.last_intent.set(Some(turn.intent.clone()));
+            let committed = turn.committed;
             let prompt = committed.prompt.trim().to_string();
-            if !prompt.is_empty() {
+            if !prompt.is_empty() && turn.intent == AssistantIntentDto::MutateOntology {
                 document.document.update(|current| {
                     if let Some(current) = current {
                         if !current.fountain_text.trim().is_empty() {
@@ -92,25 +83,27 @@ pub fn ChatInterface() -> impl IntoView {
                 });
             }
 
-            set_messages.update(|items| {
+            chat.messages.update(|items| {
                 items.push(ChatMessage {
                     role: ChatRole::Assistant,
-                    title: Some(format!(
-                        "Applied as {}",
-                        match committed.suggested_target {
-                            NarrativeCommitTargetDto::Character => "character",
-                            NarrativeCommitTargetDto::Event => "event",
-                        }
-                    )),
-                    body: summarize_commit(&committed),
+                    title: Some(match turn.intent {
+                        AssistantIntentDto::Query => format!("{} · Query", turn.reply_title),
+                        AssistantIntentDto::Guide => format!("{} · Guidance", turn.reply_title),
+                        AssistantIntentDto::Clarify => format!("{} · Clarify", turn.reply_title),
+                        AssistantIntentDto::MutateOntology => turn.reply_title,
+                        AssistantIntentDto::MutateDocument => format!("{} · Document", turn.reply_title),
+                        AssistantIntentDto::ProposeSync => format!("{} · Sync", turn.reply_title),
+                        AssistantIntentDto::ResolveLint => format!("{} · Lint", turn.reply_title),
+                    }),
+                    body: turn.reply_body,
                 });
             });
         }
     });
 
     Effect::new(move |_| {
-        if let Some(Err(err)) = commit_action.value().get() {
-            set_messages.update(|items| {
+        if let Some(Err(err)) = turn_action.value().get() {
+            chat.messages.update(|items| {
                 items.push(ChatMessage {
                     role: ChatRole::Assistant,
                     title: Some("Commit failed".to_string()),
@@ -136,9 +129,22 @@ pub fn ChatInterface() -> impl IntoView {
                 }}
             </div>
 
+            <div class="narrative-context-strip">
+                {move || match chat.working_memory.get() {
+                    Some(memory) => view! {
+                        <p class="muted">{render_working_memory(&memory)}</p>
+                    }.into_view(),
+                    _ => view! {
+                        <p class="muted">
+                            "Assistant context will appear here as the conversation settles."
+                        </p>
+                    }.into_view(),
+                }}
+            </div>
+
             <div class="chat-thread">
                 {move || {
-                    messages
+                    chat.messages
                         .get()
                         .into_iter()
                         .map(|message| {
@@ -165,7 +171,7 @@ pub fn ChatInterface() -> impl IntoView {
                     id="narrative-input"
                     class="assistant-input narrative-input-large"
                     prop:value=prompt
-                    on:input=move |ev| set_prompt.set(event_target_value(&ev))
+                    on:input=move |ev| set_prompt(event_target_value(&ev))
                     placeholder="Example: Rajan advises Prince Arjun, but secretly supports the rival claimant after the council attack."
                     rows=6
                 />
@@ -220,34 +226,28 @@ fn summarize_preview(preview: &PreviewNarrativeInputDto) -> String {
         .join(" ")
 }
 
-fn summarize_commit(preview: &PreviewNarrativeInputDto) -> String {
-    if preview.changes.is_empty() {
-        return "I did not infer a concrete structural change from that message.".to_string();
+fn render_working_memory(memory: &WorkingMemoryDto) -> String {
+    let mut lines = Vec::new();
+
+    if let Some(focus) = &memory.current_focus {
+        lines.push(format!("Focus: {}", focus.summary));
     }
 
-    let mut lines = preview
-        .changes
-        .iter()
-        .map(|change| {
-            let label = match change.kind {
-                NarrativeChangeKindDto::AddCharacter => "Added character",
-                NarrativeChangeKindDto::UpdateCharacter => "Updated character",
-                NarrativeChangeKindDto::AddEvent => "Added event",
-                NarrativeChangeKindDto::UpdateEvent => "Updated event",
-                NarrativeChangeKindDto::AddRelationship => "Added relationship",
-                NarrativeChangeKindDto::UpdateRelationship => "Updated relationship",
-            };
-            format!("{label}: {}. {}", change.label, change.detail)
-        })
-        .collect::<Vec<_>>();
-
-    if !preview.relationships.is_empty() {
-        lines.push(format!(
-            "Tracked {} relationship{} in the narrative model.",
-            preview.relationships.len(),
-            if preview.relationships.len() == 1 { "" } else { "s" }
-        ));
+    if let Some(question) = memory.open_questions.first() {
+        lines.push(format!("Open question: {}", question.question));
     }
 
-    lines.join(" ")
+    if let Some(decision) = memory.pinned_decisions.first() {
+        lines.push(format!("Pinned: {}", decision.summary));
+    }
+
+    if let Some(action) = memory.last_tool_actions.first() {
+        lines.push(format!("Last action: {}", action.summary));
+    }
+
+    if lines.is_empty() {
+        "No active context yet.".to_string()
+    } else {
+        lines.join(" ")
+    }
 }

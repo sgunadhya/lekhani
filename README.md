@@ -26,11 +26,12 @@ The repo can also generate short motion assets locally on macOS:
 ## Current Shape
 
 - `Narrative` mode:
-  - one writing surface for natural-language setup
-  - live inferred preview in a side pane
-  - single commit action
+  - chat-style assistant surface
+  - assistant thread plus composer
+  - narrative changes committed from conversation turns
 - `Edit` mode:
-  - plain Fountain editor
+  - two-pane writing surface
+  - Fountain editor plus rendered Fountain preview
 - `Visual` mode:
   - one scrollable inspector for derived narrative state
 
@@ -117,8 +118,10 @@ MODE_TAB_Y_OFFSET=48 \
 ## Development Notes
 
 - `Narrative` mode is the primary authoring surface.
+- `Edit` mode is document-first.
 - `Visual` mode is a read-oriented inspector over derived model state.
 - The UI intentionally avoids heavy manual ontology editors; the assistant is the main mutation path.
+- The long-term architecture is document + ontology + explicit links, not document or ontology alone.
 - If Foundation Models is unavailable or rejects a request, the app falls back to the local heuristic hydrator.
 
 ## Status

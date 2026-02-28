@@ -9,11 +9,17 @@ use adapters::db::{
 #[cfg(target_os = "macos")]
 use adapters::llm::FmRsNarrativeEngine;
 use adapters::llm::StubNarrativeEngine;
+use application::{
+    HeuristicAssistantCapabilityPlanner, HeuristicAssistantIntentClassifier, HeuristicMutationGate,
+};
 use adapters::tauri::{
     commit_narrative_input, export_fountain_document, get_active_screenplay,
     get_current_project, get_llm_status, get_narrative_snapshot, get_nudge, get_screenplays,
+    get_sync_debug, get_working_memory,
     get_time, import_fountain_document, open_project_document, parse_character, parse_event,
-    preview_narrative_input, save_project_document_as, save_screenplay, AppState,
+    preview_narrative_input, save_project_document_as, save_screenplay, submit_assistant_turn,
+    submit_narrative_turn,
+    AppState,
 };
 use std::sync::Arc;
 use tauri::menu::{AboutMetadataBuilder, MenuBuilder, MenuItemBuilder, SubmenuBuilder};
@@ -94,6 +100,9 @@ pub fn run() {
                 sqlite_repository,
                 llm_backend,
                 llm_detail,
+                Box::new(HeuristicAssistantIntentClassifier),
+                Box::new(HeuristicAssistantCapabilityPlanner),
+                Box::new(HeuristicMutationGate),
                 narrative_character_parser(),
                 narrative_event_parser(),
                 narrative_nudge_generator(),
@@ -112,6 +121,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             get_time,
             get_llm_status,
+            get_sync_debug,
+            get_working_memory,
             get_active_screenplay,
             get_current_project,
             get_narrative_snapshot,
@@ -123,6 +134,8 @@ pub fn run() {
             save_project_document_as,
             preview_narrative_input,
             commit_narrative_input,
+            submit_assistant_turn,
+            submit_narrative_turn,
             parse_character,
             parse_event,
             get_nudge

@@ -1,7 +1,7 @@
 use crate::api::tauri;
 use crate::state::document::DocumentContext;
 use crate::state::app_mode::AppMode;
-use crate::state::narrative::create_nudge_resource;
+use crate::state::narrative::{create_nudge_resource, NarrativeChatContext};
 use crate::views::chat::ChatInterface;
 use crate::views::editor::ScreenplayEditor;
 use crate::views::timeline::TimelineView;
@@ -15,6 +15,7 @@ pub fn WorkspaceShell() -> impl IntoView {
     let (nudge_nonce, set_nudge_nonce) = create_signal(0_u64);
     let nudge = create_nudge_resource(nudge_nonce);
     let active_project = create_local_resource(|| (), |_| async move { tauri::get_current_project().await });
+    let narrative_chat = NarrativeChatContext::new();
 
     let document_context = DocumentContext {
         document,
@@ -22,6 +23,7 @@ pub fn WorkspaceShell() -> impl IntoView {
     };
 
     provide_context(document_context);
+    provide_context(narrative_chat);
 
     create_effect(move |_| {
         if let Some(Ok(project)) = active_project.get() {

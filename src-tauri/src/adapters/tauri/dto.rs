@@ -3,8 +3,9 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::domain::{
-    ChangeType, NarrativeCharacter, NarrativeCommitTarget, NarrativeEvent,
-    NarrativeMessagePreview, NarrativeNudge, NarrativeSnapshot,
+    AssistantCapability, AssistantIntent, ChangeType, NarrativeCharacter, NarrativeCommitTarget,
+    NarrativeEvent, NarrativeMessagePreview, NarrativeNudge, NarrativeSnapshot, ProvenanceRecord,
+    SyncCandidate, SyncRun, WorkingMemory, WritePolicy,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -56,6 +57,33 @@ pub struct ParseDescriptionRequest {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CommitNarrativeInputRequest {
     pub prompt: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NarrativeTurnDto {
+    pub reply_title: String,
+    pub reply_body: String,
+    pub committed: NarrativeMessagePreview,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AssistantTurnDto {
+    pub intent: AssistantIntent,
+    pub capabilities: Vec<AssistantCapability>,
+    pub write_policy: WritePolicy,
+    pub reply_title: String,
+    pub reply_body: String,
+    pub committed: NarrativeMessagePreview,
+    pub working_memory: WorkingMemory,
+}
+
+pub type WorkingMemoryDto = WorkingMemory;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SyncDebugDto {
+    pub runs: Vec<SyncRun>,
+    pub pending_candidates: Vec<SyncCandidate>,
+    pub recent_provenance: Vec<ProvenanceRecord>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -485,6 +485,13 @@ button {
     margin: 0 auto;
 }
 
+.narrative-context-strip {
+    max-width: 56rem;
+    width: 100%;
+    margin: 0 auto;
+    padding-bottom: 0.25rem;
+}
+
 .chat-thread {
     display: flex;
     flex-direction: column;
@@ -823,6 +830,14 @@ button {
 .focus-list,
 .screenplay-list {
     list-style: none;
+}
+
+.inspector-inline-list {
+    margin-top: 0.2rem;
+    padding-left: 1rem;
+    display: grid;
+    gap: 0.28rem;
+    color: var(--text-secondary);
 }
 
 .focus-list li,

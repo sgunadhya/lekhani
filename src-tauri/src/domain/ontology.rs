@@ -22,6 +22,7 @@ pub enum OntologyRelationshipKind {
     SupportsCharacter,
     OpposesCharacter,
     AdvisesCharacter,
+    SiblingOfCharacter,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

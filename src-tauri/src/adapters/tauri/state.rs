@@ -1,5 +1,8 @@
 use crate::adapters::db::SqliteScreenplayRepository;
-use crate::application::{NarrativeService, ScreenplayService};
+use crate::application::{
+    AssistantCapabilityPlanner, AssistantIntentClassifier, MutationGate, NarrativeService,
+    ScreenplayService,
+};
 use crate::domain::{NarrativeCharacter, NarrativeEvent, NarrativeSnapshot, OntologyRelationship};
 use crate::ports::{
     CharacterParser, EventParser, NarrativeRepository, NudgeGenerator, ScreenplayRepository,
@@ -14,6 +17,9 @@ pub struct AppState {
         Box<dyn EventParser>,
         Box<dyn NudgeGenerator>,
     >,
+    pub assistant_intent_classifier: Box<dyn AssistantIntentClassifier>,
+    pub assistant_capability_planner: Box<dyn AssistantCapabilityPlanner>,
+    pub mutation_gate: Box<dyn MutationGate>,
     pub narrative_repository: Box<dyn NarrativeRepository>,
     pub sqlite_repository: Option<Arc<SqliteScreenplayRepository>>,
     pub llm_backend: String,
@@ -27,6 +33,9 @@ impl AppState {
         sqlite_repository: Option<Arc<SqliteScreenplayRepository>>,
         llm_backend: String,
         llm_detail: String,
+        assistant_intent_classifier: Box<dyn AssistantIntentClassifier>,
+        assistant_capability_planner: Box<dyn AssistantCapabilityPlanner>,
+        mutation_gate: Box<dyn MutationGate>,
         character_parser: Box<dyn CharacterParser>,
         event_parser: Box<dyn EventParser>,
         nudge_generator: Box<dyn NudgeGenerator>,
@@ -38,6 +47,9 @@ impl AppState {
                 event_parser,
                 nudge_generator,
             ),
+            assistant_intent_classifier,
+            assistant_capability_planner,
+            mutation_gate,
             narrative_repository,
             sqlite_repository,
             llm_backend,

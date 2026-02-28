@@ -1,11 +1,17 @@
-use crate::api::dto::{NarrativeSnapshotDto, OntologyRelationshipKindDto};
-use crate::state::narrative::create_snapshot_resource;
+use crate::api::dto::{
+    NarrativeSnapshotDto, OntologyRelationshipKindDto, SyncDebugDto, WorkingMemoryDto,
+};
+use crate::state::narrative::{
+    create_snapshot_resource, create_sync_debug_resource, create_working_memory_resource,
+};
 use leptos::*;
 
 #[component]
 pub fn TimelineView() -> impl IntoView {
     let (snapshot_nonce, set_snapshot_nonce) = create_signal(0_u64);
     let snapshot = create_snapshot_resource(snapshot_nonce);
+    let sync_debug = create_sync_debug_resource(snapshot_nonce);
+    let working_memory = create_working_memory_resource(snapshot_nonce);
 
     view! {
         <section class="visual-inspector">
@@ -59,6 +65,11 @@ pub fn TimelineView() -> impl IntoView {
                                         <strong>{snapshot.projection_relationships.len()}</strong>
                                     </div>
                                 </div>
+                            </section>
+
+                            <section class="visual-section">
+                                <span class="eyebrow">"Assistant state"</span>
+                                {render_working_memory(working_memory.get())}
                             </section>
 
                             <section class="visual-section">
@@ -152,11 +163,127 @@ pub fn TimelineView() -> impl IntoView {
                                     </div>
                                 </div>
                             </section>
+
+                            <section class="visual-section">
+                                <span class="eyebrow">"Sync activity"</span>
+                                {render_sync_debug(sync_debug.get())}
+                            </section>
                         </div>
                     }.into_view()
                 }
             }}
         </section>
+    }
+}
+
+fn render_working_memory(
+    memory: Option<Result<WorkingMemoryDto, String>>,
+) -> impl IntoView {
+    match memory {
+        None => view! { <p class="muted">"Loading assistant state..."</p> }.into_view(),
+        Some(Err(err)) => view! { <p class="error">{err}</p> }.into_view(),
+        Some(Ok(memory)) => {
+            let focus = memory.current_focus.as_ref().map(|focus| focus.summary.clone());
+            let questions = memory
+                .open_questions
+                .iter()
+                .map(|question| question.question.clone())
+                .collect::<Vec<_>>();
+            let decisions = memory
+                .pinned_decisions
+                .iter()
+                .map(|decision| decision.summary.clone())
+                .collect::<Vec<_>>();
+            let last_action = memory.last_tool_actions.first().cloned();
+
+            view! {
+                <div class="inspector-list">
+                    <div class="inspector-row">
+                        <strong>"Current focus"</strong>
+                        <p>{focus.unwrap_or_else(|| "No active focus yet.".to_string())}</p>
+                    </div>
+                    <div class="inspector-row">
+                        <strong>"Open questions"</strong>
+                        {if questions.is_empty() {
+                            view! { <p class="muted">"No open questions tracked."</p> }.into_view()
+                        } else {
+                            view! {
+                                <ul class="inspector-inline-list">
+                                    {questions.into_iter().map(|question| view! { <li>{question}</li> }).collect_view()}
+                                </ul>
+                            }.into_view()
+                        }}
+                    </div>
+                    <div class="inspector-row">
+                        <strong>"Pinned decisions"</strong>
+                        {if decisions.is_empty() {
+                            view! { <p class="muted">"No pinned decisions yet."</p> }.into_view()
+                        } else {
+                            view! {
+                                <ul class="inspector-inline-list">
+                                    {decisions.into_iter().map(|decision| view! { <li>{decision}</li> }).collect_view()}
+                                </ul>
+                            }.into_view()
+                        }}
+                    </div>
+                    <div class="inspector-row">
+                        <strong>"Last tool action"</strong>
+                        <p>
+                            {last_action
+                                .map(|action| format!("{}: {}", action.tool_name, action.summary))
+                                .unwrap_or_else(|| "No tool action recorded yet.".to_string())}
+                        </p>
+                    </div>
+                </div>
+            }
+            .into_view()
+        }
+    }
+}
+
+fn render_sync_debug(
+    debug: Option<Result<SyncDebugDto, String>>,
+) -> impl IntoView {
+    match debug {
+        None => view! { <p class="muted">"Loading sync activity..."</p> }.into_view(),
+        Some(Err(err)) => view! { <p class="error">{err}</p> }.into_view(),
+        Some(Ok(debug)) => {
+            let recent_run = debug.runs.first().cloned();
+            let pending = debug.pending_candidates;
+            let provenance = debug.recent_provenance;
+
+            view! {
+                <div class="inspector-list">
+                    <div class="inspector-row">
+                        <strong>"Latest run"</strong>
+                        <p>
+                            {recent_run
+                                .map(|run| format!("{:?} · {:?} · {}", run.source_kind, run.status, run.created_at.format("%b %d, %H:%M")))
+                                .unwrap_or_else(|| "No sync runs recorded yet.".to_string())}
+                        </p>
+                    </div>
+                    <div class="inspector-row">
+                        <strong>"Pending candidates"</strong>
+                        <p>{if pending.is_empty() { "0".to_string() } else { pending.len().to_string() }}</p>
+                    </div>
+                    <div class="inspector-row">
+                        <strong>"Recent provenance"</strong>
+                        {if provenance.is_empty() {
+                            view! { <p class="muted">"No provenance records yet."</p> }.into_view()
+                        } else {
+                            view! {
+                                <ul class="inspector-inline-list">
+                                    {provenance.into_iter().take(5).map(|record| view! {
+                                        <li>{format!("{} -> {}", record.derived_kind, record.derived_ref)}</li>
+                                    }).collect_view()}
+                                </ul>
+                            }.into_view()
+                        }}
+                    </div>
+                </div>
+            }
+            .into_view()
+        }
     }
 }
 

@@ -1,10 +1,13 @@
+use crate::adapters::mcp::{get_debug_state, preview_turn, submit_turn, SyncDebugState};
 use crate::adapters::tauri::dto::{
-    CommitNarrativeInputRequest, DocumentFileDto, LlmStatusDto, NarrativeCharacterDto,
-    NarrativeCommitTargetDto, NarrativeEventDto, NarrativeNudgeDto, NarrativeSnapshotDto,
-    ParseDescriptionRequest, PreviewNarrativeInputDto, SaveDocumentRequest,
-    SaveScreenplayRequest, ScreenplayDto,
+    AssistantTurnDto, CommitNarrativeInputRequest, DocumentFileDto, LlmStatusDto, NarrativeCharacterDto,
+    NarrativeEventDto, NarrativeNudgeDto, NarrativeSnapshotDto, NarrativeTurnDto,
+    ParseDescriptionRequest, PreviewNarrativeInputDto, SaveDocumentRequest, SyncDebugDto,
+    SaveScreenplayRequest, ScreenplayDto, WorkingMemoryDto,
 };
 use crate::adapters::tauri::state::AppState;
+use crate::domain::WorkingMemory;
+use crate::ports::WorkingMemoryRepository;
 use std::path::PathBuf;
 use tauri::{AppHandle, Manager, State};
 use tauri_plugin_dialog::DialogExt;
@@ -20,6 +23,32 @@ pub fn get_llm_status(state: State<'_, AppState>) -> Result<LlmStatusDto, String
         backend: state.llm_backend.clone(),
         detail: state.llm_detail.clone(),
     })
+}
+
+#[tauri::command]
+pub fn get_sync_debug(state: State<'_, AppState>) -> Result<SyncDebugDto, String> {
+    let SyncDebugState {
+        runs,
+        pending_candidates,
+        recent_provenance,
+    } = get_debug_state(&state)?;
+
+    Ok(SyncDebugDto {
+        runs,
+        pending_candidates,
+        recent_provenance,
+    })
+}
+
+#[tauri::command]
+pub fn get_working_memory(state: State<'_, AppState>) -> Result<WorkingMemoryDto, String> {
+    let Some(repository) = state.sqlite_repository.as_ref() else {
+        return Ok(WorkingMemory::default());
+    };
+
+    repository
+        .load_working_memory("current-project", "main")
+        .map_err(|err| err.to_string())
 }
 
 #[tauri::command]
@@ -221,50 +250,56 @@ pub async fn commit_narrative_input(
     .map_err(|err| format!("failed to join commit task: {err}"))?
 }
 
+#[tauri::command]
+pub async fn submit_narrative_turn(
+    app: AppHandle,
+    request: CommitNarrativeInputRequest,
+) -> Result<NarrativeTurnDto, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<AppState>();
+        submit_turn(&state, &request.prompt).map(|turn| NarrativeTurnDto {
+            reply_title: turn.reply_title,
+            reply_body: turn.reply_body,
+            committed: turn.committed,
+        })
+    })
+    .await
+    .map_err(|err| format!("failed to join narrative turn task: {err}"))?
+}
+
+#[tauri::command]
+pub async fn submit_assistant_turn(
+    app: AppHandle,
+    request: CommitNarrativeInputRequest,
+) -> Result<AssistantTurnDto, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<AppState>();
+        submit_turn(&state, &request.prompt).map(|turn| AssistantTurnDto {
+            intent: turn.intent,
+            capabilities: turn.capabilities,
+            write_policy: turn.write_policy,
+            reply_title: turn.reply_title,
+            reply_body: turn.reply_body,
+            committed: turn.committed,
+            working_memory: turn.working_memory,
+        })
+    })
+    .await
+    .map_err(|err| format!("failed to join assistant turn task: {err}"))?
+}
+
 fn preview_narrative_input_inner(
     state: &AppState,
     request: ParseDescriptionRequest,
 ) -> Result<PreviewNarrativeInputDto, String> {
-    let snapshot = state.get_snapshot()?;
-    state
-        .narrative_service
-        .preview_message(&request.description, &snapshot)
+    preview_turn(state, &request.description)
 }
 
 fn commit_narrative_input_inner(
     state: &AppState,
     request: CommitNarrativeInputRequest,
 ) -> Result<PreviewNarrativeInputDto, String> {
-    let prompt = request.prompt.trim().to_string();
-    if prompt.is_empty() {
-        return Err("prompt is empty".to_string());
-    }
-
-    let snapshot = state.get_snapshot()?;
-    let preview = state.narrative_service.preview_message(&prompt, &snapshot)?;
-
-    match preview.suggested_target {
-        NarrativeCommitTargetDto::Character => {
-            let character = preview
-                .character
-                .clone()
-                .ok_or_else(|| "unable to hydrate a character preview from this input".to_string())?;
-            state.store_character(character)?;
-        }
-        NarrativeCommitTargetDto::Event => {
-            let event = preview
-                .event
-                .clone()
-                .ok_or_else(|| "unable to hydrate an event preview from this input".to_string())?;
-            state.store_event(event)?;
-        }
-    }
-
-    for relationship in preview.relationships.iter().cloned() {
-        state.store_relationship(relationship)?;
-    }
-
-    Ok(preview)
+    submit_turn(state, &request.prompt).map(|turn| turn.committed)
 }
 
 #[tauri::command]
@@ -317,6 +352,7 @@ fn default_fountain_filename(title: &str) -> String {
         format!("{slug}.fountain")
     }
 }
+
 
 fn slugify_title(title: &str) -> String {
     let slug = title

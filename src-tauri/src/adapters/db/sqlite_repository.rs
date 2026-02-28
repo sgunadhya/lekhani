@@ -5,18 +5,26 @@ use chrono::{DateTime, Utc};
 use rusqlite::{params, Connection, OptionalExtension};
 
 use crate::domain::{
-    AppError, NarrativeCharacter, NarrativeEvent, NarrativeMetrics, NarrativeSnapshot,
+    AppError, AssistantIntent, CandidateStatus, DocumentOntologyLink, FocusItem, LintFinding,
+    LintScope, LintSeverity, LintStatus, NarrativeCharacter, NarrativeEvent, NarrativeMetrics,
+    NarrativeSnapshot,
     OntologyEntity, OntologyEntityKind, OntologyGraph, OntologyRelationship,
-    OntologyRelationshipKind, Screenplay, ScreenplayChange,
+    OntologyRelationshipKind, ProvenanceRecord, Screenplay, ScreenplayChange, SyncActionKind,
+    SyncCandidate, SyncConflict, SyncRun, SyncRunStatus, SyncSourceKind, SyncTargetKind,
+    SyncTargetLayer, WorkingMemory,
 };
-use crate::ports::{NarrativeRepository, ScreenplayRepository};
+use crate::ports::{
+    CandidateRepository, ConflictRepository, LinkRepository, LintRepository,
+    NarrativeRepository, ProvenanceRepository, ScreenplayRepository, SyncRunRepository,
+    WorkingMemoryRepository,
+};
 use uuid::Uuid;
 
 pub struct SqliteScreenplayRepository {
     path: Mutex<PathBuf>,
 }
 
-const MIGRATIONS: [(&str, &str); 2] = [
+const MIGRATIONS: [(&str, &str); 4] = [
     (
         "0001_init.sql",
         include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/migrations/0001_init.sql")),
@@ -26,6 +34,20 @@ const MIGRATIONS: [(&str, &str); 2] = [
         include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/migrations/0002_normalize_screenplay_changes.sql"
+        )),
+    ),
+    (
+        "0003_sync_control.sql",
+        include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/migrations/0003_sync_control.sql"
+        )),
+    ),
+    (
+        "0004_assistant_memory.sql",
+        include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/migrations/0004_assistant_memory.sql"
         )),
     ),
 ];
@@ -104,6 +126,77 @@ impl SqliteScreenplayRepository {
         }
 
         Ok(())
+    }
+
+    pub fn list_recent_sync_runs(&self, limit: usize) -> Result<Vec<SyncRun>, AppError> {
+        let connection = self.connection()?;
+        let mut statement = connection
+            .prepare(
+                "SELECT id, source_kind, source_ref, document_version, ontology_version, status, created_at, completed_at
+                 FROM sync_runs
+                 ORDER BY created_at DESC
+                 LIMIT ?1",
+            )
+            .map_err(|_| AppError::StatePoisoned("failed to prepare recent sync run query"))?;
+
+        let rows = statement
+            .query_map([limit as i64], |row| {
+                let id: String = row.get(0)?;
+                let source_kind: String = row.get(1)?;
+                let created_at: String = row.get(6)?;
+                let completed_at: Option<String> = row.get(7)?;
+
+                Ok(SyncRun {
+                    id: parse_uuid_or_nil(&id),
+                    source_kind: sync_source_kind_from_str(&source_kind),
+                    source_ref: row.get(2)?,
+                    document_version: row.get(3)?,
+                    ontology_version: row.get(4)?,
+                    status: sync_run_status_from_str(&row.get::<_, String>(5)?),
+                    created_at: parse_datetime_or_now(&created_at),
+                    completed_at: completed_at.as_deref().map(parse_datetime_or_now),
+                })
+            })
+            .map_err(|_| AppError::StatePoisoned("failed to query recent sync runs"))?;
+
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|_| AppError::StatePoisoned("failed to read recent sync runs"))
+    }
+
+    pub fn list_recent_provenance(&self, limit: usize) -> Result<Vec<ProvenanceRecord>, AppError> {
+        let connection = self.connection()?;
+        let mut statement = connection
+            .prepare(
+                "SELECT id, sync_run_id, source_kind, source_ref, derived_kind, derived_ref, confidence, notes, created_at
+                 FROM provenance_records
+                 ORDER BY created_at DESC
+                 LIMIT ?1",
+            )
+            .map_err(|_| AppError::StatePoisoned("failed to prepare recent provenance query"))?;
+
+        let rows = statement
+            .query_map([limit as i64], |row| {
+                let id: String = row.get(0)?;
+                let sync_run_id: String = row.get(1)?;
+                let source_kind: String = row.get(2)?;
+                let created_at: String = row.get(8)?;
+
+                Ok(ProvenanceRecord {
+                    id: parse_uuid_or_nil(&id),
+                    sync_run_id: parse_uuid_or_nil(&sync_run_id),
+                    source_kind: sync_source_kind_from_str(&source_kind),
+                    source_ref: row.get(3)?,
+                    derived_kind: row.get(4)?,
+                    derived_ref: row.get(5)?,
+                    confidence: row.get(6)?,
+                    notes: row.get(7)?,
+                    created_at: parse_datetime_or_now(&created_at),
+                })
+            })
+            .map_err(|_| AppError::StatePoisoned("failed to query recent provenance"))?;
+
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|_| AppError::StatePoisoned("failed to read recent provenance"))
     }
 
     fn backfill_screenplay_changes(connection: &Connection) -> Result<(), Box<dyn std::error::Error>> {
@@ -732,8 +825,622 @@ impl NarrativeRepository for SqliteScreenplayRepository {
     }
 }
 
+impl SyncRunRepository for SqliteScreenplayRepository {
+    fn create_run(&self, run: SyncRun) -> Result<SyncRun, AppError> {
+        let connection = self.connection()?;
+        connection
+            .execute(
+                "INSERT INTO sync_runs
+                    (id, source_kind, source_ref, document_version, ontology_version, status, created_at, completed_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                params![
+                    run.id.to_string(),
+                    sync_source_kind_to_str(&run.source_kind),
+                    run.source_ref,
+                    run.document_version,
+                    run.ontology_version,
+                    sync_run_status_to_str(&run.status),
+                    run.created_at.to_rfc3339(),
+                    run.completed_at.map(|value| value.to_rfc3339()),
+                ],
+            )
+            .map_err(|_| AppError::StatePoisoned("failed to create sync run"))?;
+
+        Ok(run)
+    }
+
+    fn update_run(&self, run: SyncRun) -> Result<SyncRun, AppError> {
+        let connection = self.connection()?;
+        connection
+            .execute(
+                "UPDATE sync_runs
+                 SET source_kind = ?2,
+                     source_ref = ?3,
+                     document_version = ?4,
+                     ontology_version = ?5,
+                     status = ?6,
+                     created_at = ?7,
+                     completed_at = ?8
+                 WHERE id = ?1",
+                params![
+                    run.id.to_string(),
+                    sync_source_kind_to_str(&run.source_kind),
+                    run.source_ref,
+                    run.document_version,
+                    run.ontology_version,
+                    sync_run_status_to_str(&run.status),
+                    run.created_at.to_rfc3339(),
+                    run.completed_at.map(|value| value.to_rfc3339()),
+                ],
+            )
+            .map_err(|_| AppError::StatePoisoned("failed to update sync run"))?;
+
+        Ok(run)
+    }
+
+    fn get_run(&self, run_id: &str) -> Result<Option<SyncRun>, AppError> {
+        let connection = self.connection()?;
+        connection
+            .query_row(
+                "SELECT id, source_kind, source_ref, document_version, ontology_version, status, created_at, completed_at
+                 FROM sync_runs
+                 WHERE id = ?1",
+                [run_id],
+                |row| {
+                    let id: String = row.get(0)?;
+                    let source_kind: String = row.get(1)?;
+                    let created_at: String = row.get(6)?;
+                    let completed_at: Option<String> = row.get(7)?;
+
+                    Ok(SyncRun {
+                        id: parse_uuid_or_nil(&id),
+                        source_kind: sync_source_kind_from_str(&source_kind),
+                        source_ref: row.get(2)?,
+                        document_version: row.get(3)?,
+                        ontology_version: row.get(4)?,
+                        status: sync_run_status_from_str(&row.get::<_, String>(5)?),
+                        created_at: parse_datetime_or_now(&created_at),
+                        completed_at: completed_at.as_deref().map(parse_datetime_or_now),
+                    })
+                },
+            )
+            .optional()
+            .map_err(|_| AppError::StatePoisoned("failed to query sync run"))
+    }
+}
+
+impl CandidateRepository for SqliteScreenplayRepository {
+    fn create_candidate(&self, candidate: SyncCandidate) -> Result<SyncCandidate, AppError> {
+        let connection = self.connection()?;
+        connection
+            .execute(
+                "INSERT INTO sync_candidates
+                    (id, sync_run_id, source_kind, source_ref, target_layer, target_kind, action_kind, status, confidence, title, summary, payload_json, evidence_json, created_at, resolved_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
+                params![
+                    candidate.id.to_string(),
+                    candidate.sync_run_id.to_string(),
+                    sync_source_kind_to_str(&candidate.source_kind),
+                    candidate.source_ref,
+                    sync_target_layer_to_str(&candidate.target_layer),
+                    sync_target_kind_to_str(&candidate.target_kind),
+                    sync_action_kind_to_str(&candidate.action_kind),
+                    candidate_status_to_str(&candidate.status),
+                    candidate.confidence,
+                    candidate.title,
+                    candidate.summary,
+                    candidate.payload_json,
+                    candidate.evidence_json,
+                    candidate.created_at.to_rfc3339(),
+                    candidate.resolved_at.map(|value| value.to_rfc3339()),
+                ],
+            )
+            .map_err(|_| AppError::StatePoisoned("failed to create sync candidate"))?;
+
+        Ok(candidate)
+    }
+
+    fn update_candidate(&self, candidate: SyncCandidate) -> Result<SyncCandidate, AppError> {
+        let connection = self.connection()?;
+        connection
+            .execute(
+                "UPDATE sync_candidates
+                 SET sync_run_id = ?2,
+                     source_kind = ?3,
+                     source_ref = ?4,
+                     target_layer = ?5,
+                     target_kind = ?6,
+                     action_kind = ?7,
+                     status = ?8,
+                     confidence = ?9,
+                     title = ?10,
+                     summary = ?11,
+                     payload_json = ?12,
+                     evidence_json = ?13,
+                     created_at = ?14,
+                     resolved_at = ?15
+                 WHERE id = ?1",
+                params![
+                    candidate.id.to_string(),
+                    candidate.sync_run_id.to_string(),
+                    sync_source_kind_to_str(&candidate.source_kind),
+                    candidate.source_ref,
+                    sync_target_layer_to_str(&candidate.target_layer),
+                    sync_target_kind_to_str(&candidate.target_kind),
+                    sync_action_kind_to_str(&candidate.action_kind),
+                    candidate_status_to_str(&candidate.status),
+                    candidate.confidence,
+                    candidate.title,
+                    candidate.summary,
+                    candidate.payload_json,
+                    candidate.evidence_json,
+                    candidate.created_at.to_rfc3339(),
+                    candidate.resolved_at.map(|value| value.to_rfc3339()),
+                ],
+            )
+            .map_err(|_| AppError::StatePoisoned("failed to update sync candidate"))?;
+
+        Ok(candidate)
+    }
+
+    fn list_pending_candidates(&self) -> Result<Vec<SyncCandidate>, AppError> {
+        let connection = self.connection()?;
+        let mut statement = connection
+            .prepare(
+                "SELECT id, sync_run_id, source_kind, source_ref, target_layer, target_kind, action_kind, status, confidence, title, summary, payload_json, evidence_json, created_at, resolved_at
+                 FROM sync_candidates
+                 WHERE status IN ('draft', 'ready', 'conflicted')
+                 ORDER BY created_at ASC",
+            )
+            .map_err(|_| AppError::StatePoisoned("failed to prepare sync candidate query"))?;
+
+        let rows = statement
+            .query_map([], |row| {
+                let id: String = row.get(0)?;
+                let sync_run_id: String = row.get(1)?;
+                let source_kind: String = row.get(2)?;
+                let target_layer: String = row.get(4)?;
+                let target_kind: String = row.get(5)?;
+                let action_kind: String = row.get(6)?;
+                let status: String = row.get(7)?;
+                let created_at: String = row.get(13)?;
+                let resolved_at: Option<String> = row.get(14)?;
+
+                Ok(SyncCandidate {
+                    id: parse_uuid_or_nil(&id),
+                    sync_run_id: parse_uuid_or_nil(&sync_run_id),
+                    source_kind: sync_source_kind_from_str(&source_kind),
+                    source_ref: row.get(3)?,
+                    target_layer: sync_target_layer_from_str(&target_layer),
+                    target_kind: sync_target_kind_from_str(&target_kind),
+                    action_kind: sync_action_kind_from_str(&action_kind),
+                    status: candidate_status_from_str(&status),
+                    confidence: row.get(8)?,
+                    title: row.get(9)?,
+                    summary: row.get(10)?,
+                    payload_json: row.get(11)?,
+                    evidence_json: row.get(12)?,
+                    created_at: parse_datetime_or_now(&created_at),
+                    resolved_at: resolved_at.as_deref().map(parse_datetime_or_now),
+                })
+            })
+            .map_err(|_| AppError::StatePoisoned("failed to query sync candidates"))?;
+
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|_| AppError::StatePoisoned("failed to read sync candidate rows"))
+    }
+}
+
+impl ConflictRepository for SqliteScreenplayRepository {
+    fn create_conflict(&self, conflict: SyncConflict) -> Result<SyncConflict, AppError> {
+        let connection = self.connection()?;
+        connection
+            .execute(
+                "INSERT INTO sync_conflicts
+                    (id, candidate_id, conflict_kind, summary, details_json, status, created_at, resolved_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                params![
+                    conflict.id.to_string(),
+                    conflict.candidate_id.to_string(),
+                    conflict_kind_to_str(&conflict.conflict_kind),
+                    conflict.summary,
+                    conflict.details_json,
+                    candidate_status_to_str(&conflict.status),
+                    conflict.created_at.to_rfc3339(),
+                    conflict.resolved_at.map(|value| value.to_rfc3339()),
+                ],
+            )
+            .map_err(|_| AppError::StatePoisoned("failed to create sync conflict"))?;
+
+        Ok(conflict)
+    }
+
+    fn list_open_conflicts(&self) -> Result<Vec<SyncConflict>, AppError> {
+        let connection = self.connection()?;
+        let mut statement = connection
+            .prepare(
+                "SELECT id, candidate_id, conflict_kind, summary, details_json, status, created_at, resolved_at
+                 FROM sync_conflicts
+                 WHERE status = 'conflicted'
+                 ORDER BY created_at ASC",
+            )
+            .map_err(|_| AppError::StatePoisoned("failed to prepare sync conflict query"))?;
+
+        let rows = statement
+            .query_map([], |row| {
+                let id: String = row.get(0)?;
+                let candidate_id: String = row.get(1)?;
+                let conflict_kind: String = row.get(2)?;
+                let status: String = row.get(5)?;
+                let created_at: String = row.get(6)?;
+                let resolved_at: Option<String> = row.get(7)?;
+
+                Ok(SyncConflict {
+                    id: parse_uuid_or_nil(&id),
+                    candidate_id: parse_uuid_or_nil(&candidate_id),
+                    conflict_kind: conflict_kind_from_str(&conflict_kind),
+                    summary: row.get(3)?,
+                    details_json: row.get(4)?,
+                    status: candidate_status_from_str(&status),
+                    created_at: parse_datetime_or_now(&created_at),
+                    resolved_at: resolved_at.as_deref().map(parse_datetime_or_now),
+                })
+            })
+            .map_err(|_| AppError::StatePoisoned("failed to query sync conflicts"))?;
+
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|_| AppError::StatePoisoned("failed to read sync conflict rows"))
+    }
+}
+
+impl ProvenanceRepository for SqliteScreenplayRepository {
+    fn create_record(&self, record: ProvenanceRecord) -> Result<ProvenanceRecord, AppError> {
+        let connection = self.connection()?;
+        connection
+            .execute(
+                "INSERT INTO provenance_records
+                    (id, sync_run_id, source_kind, source_ref, derived_kind, derived_ref, confidence, notes, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                params![
+                    record.id.to_string(),
+                    record.sync_run_id.to_string(),
+                    sync_source_kind_to_str(&record.source_kind),
+                    record.source_ref,
+                    record.derived_kind,
+                    record.derived_ref,
+                    record.confidence,
+                    record.notes,
+                    record.created_at.to_rfc3339(),
+                ],
+            )
+            .map_err(|_| AppError::StatePoisoned("failed to create provenance record"))?;
+
+        Ok(record)
+    }
+
+    fn list_for_run(&self, run_id: &str) -> Result<Vec<ProvenanceRecord>, AppError> {
+        let connection = self.connection()?;
+        let mut statement = connection
+            .prepare(
+                "SELECT id, sync_run_id, source_kind, source_ref, derived_kind, derived_ref, confidence, notes, created_at
+                 FROM provenance_records
+                 WHERE sync_run_id = ?1
+                 ORDER BY created_at ASC",
+            )
+            .map_err(|_| AppError::StatePoisoned("failed to prepare provenance query"))?;
+
+        let rows = statement
+            .query_map([run_id], |row| {
+                let id: String = row.get(0)?;
+                let sync_run_id: String = row.get(1)?;
+                let source_kind: String = row.get(2)?;
+                let created_at: String = row.get(8)?;
+
+                Ok(ProvenanceRecord {
+                    id: parse_uuid_or_nil(&id),
+                    sync_run_id: parse_uuid_or_nil(&sync_run_id),
+                    source_kind: sync_source_kind_from_str(&source_kind),
+                    source_ref: row.get(3)?,
+                    derived_kind: row.get(4)?,
+                    derived_ref: row.get(5)?,
+                    confidence: row.get(6)?,
+                    notes: row.get(7)?,
+                    created_at: parse_datetime_or_now(&created_at),
+                })
+            })
+            .map_err(|_| AppError::StatePoisoned("failed to query provenance records"))?;
+
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|_| AppError::StatePoisoned("failed to read provenance rows"))
+    }
+}
+
+impl LinkRepository for SqliteScreenplayRepository {
+    fn upsert_link(&self, link: DocumentOntologyLink) -> Result<DocumentOntologyLink, AppError> {
+        let connection = self.connection()?;
+        connection
+            .execute(
+                "INSERT INTO document_ontology_links
+                    (id, document_ref, ontology_ref, link_kind, confidence, status, provenance_id, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+                 ON CONFLICT(id) DO UPDATE SET
+                    document_ref = excluded.document_ref,
+                    ontology_ref = excluded.ontology_ref,
+                    link_kind = excluded.link_kind,
+                    confidence = excluded.confidence,
+                    status = excluded.status,
+                    provenance_id = excluded.provenance_id,
+                    created_at = excluded.created_at,
+                    updated_at = excluded.updated_at",
+                params![
+                    link.id.to_string(),
+                    link.document_ref,
+                    link.ontology_ref,
+                    link.link_kind,
+                    link.confidence,
+                    link_status_to_str(&link.status),
+                    link.provenance_id.map(|value| value.to_string()),
+                    link.created_at.to_rfc3339(),
+                    link.updated_at.to_rfc3339(),
+                ],
+            )
+            .map_err(|_| AppError::StatePoisoned("failed to upsert document ontology link"))?;
+
+        Ok(link)
+    }
+
+    fn find_for_document_ref(
+        &self,
+        document_ref: &str,
+    ) -> Result<Vec<DocumentOntologyLink>, AppError> {
+        let connection = self.connection()?;
+        let mut statement = connection
+            .prepare(
+                "SELECT id, document_ref, ontology_ref, link_kind, confidence, status, provenance_id, created_at, updated_at
+                 FROM document_ontology_links
+                 WHERE document_ref = ?1
+                 ORDER BY updated_at DESC",
+            )
+            .map_err(|_| AppError::StatePoisoned("failed to prepare document link query"))?;
+
+        let rows = statement
+            .query_map([document_ref], map_document_ontology_link_row)
+            .map_err(|_| AppError::StatePoisoned("failed to query document links"))?;
+
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|_| AppError::StatePoisoned("failed to read document link rows"))
+    }
+
+    fn find_for_ontology_ref(
+        &self,
+        ontology_ref: &str,
+    ) -> Result<Vec<DocumentOntologyLink>, AppError> {
+        let connection = self.connection()?;
+        let mut statement = connection
+            .prepare(
+                "SELECT id, document_ref, ontology_ref, link_kind, confidence, status, provenance_id, created_at, updated_at
+                 FROM document_ontology_links
+                 WHERE ontology_ref = ?1
+                 ORDER BY updated_at DESC",
+            )
+            .map_err(|_| AppError::StatePoisoned("failed to prepare ontology link query"))?;
+
+        let rows = statement
+            .query_map([ontology_ref], map_document_ontology_link_row)
+            .map_err(|_| AppError::StatePoisoned("failed to query ontology links"))?;
+
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|_| AppError::StatePoisoned("failed to read ontology link rows"))
+    }
+}
+
+impl LintRepository for SqliteScreenplayRepository {
+    fn upsert_finding(&self, finding: LintFinding) -> Result<LintFinding, AppError> {
+        let connection = self.connection()?;
+        connection
+            .execute(
+                "INSERT INTO lint_findings
+                    (id, scope, severity, kind, message, evidence_json, status, created_at, resolved_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+                 ON CONFLICT(id) DO UPDATE SET
+                    scope = excluded.scope,
+                    severity = excluded.severity,
+                    kind = excluded.kind,
+                    message = excluded.message,
+                    evidence_json = excluded.evidence_json,
+                    status = excluded.status,
+                    created_at = excluded.created_at,
+                    resolved_at = excluded.resolved_at",
+                params![
+                    finding.id.to_string(),
+                    lint_scope_to_str(&finding.scope),
+                    lint_severity_to_str(&finding.severity),
+                    finding.kind,
+                    finding.message,
+                    finding.evidence_json,
+                    lint_status_to_str(&finding.status),
+                    finding.created_at.to_rfc3339(),
+                    finding.resolved_at.map(|value| value.to_rfc3339()),
+                ],
+            )
+            .map_err(|_| AppError::StatePoisoned("failed to upsert lint finding"))?;
+
+        Ok(finding)
+    }
+
+    fn list_open_findings(&self) -> Result<Vec<LintFinding>, AppError> {
+        let connection = self.connection()?;
+        let mut statement = connection
+            .prepare(
+                "SELECT id, scope, severity, kind, message, evidence_json, status, created_at, resolved_at
+                 FROM lint_findings
+                 WHERE status = 'open'
+                 ORDER BY created_at DESC",
+            )
+            .map_err(|_| AppError::StatePoisoned("failed to prepare lint finding query"))?;
+
+        let rows = statement
+            .query_map([], |row| {
+                let id: String = row.get(0)?;
+                let scope: String = row.get(1)?;
+                let severity: String = row.get(2)?;
+                let status: String = row.get(6)?;
+                let created_at: String = row.get(7)?;
+                let resolved_at: Option<String> = row.get(8)?;
+
+                Ok(LintFinding {
+                    id: parse_uuid_or_nil(&id),
+                    scope: lint_scope_from_str(&scope),
+                    severity: lint_severity_from_str(&severity),
+                    kind: row.get(3)?,
+                    message: row.get(4)?,
+                    evidence_json: row.get(5)?,
+                    status: lint_status_from_str(&status),
+                    created_at: parse_datetime_or_now(&created_at),
+                    resolved_at: resolved_at.as_deref().map(parse_datetime_or_now),
+                })
+            })
+            .map_err(|_| AppError::StatePoisoned("failed to query lint findings"))?;
+
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|_| AppError::StatePoisoned("failed to read lint finding rows"))
+    }
+}
+
+impl WorkingMemoryRepository for SqliteScreenplayRepository {
+    fn load_working_memory(
+        &self,
+        project_id: &str,
+        session_id: &str,
+    ) -> Result<WorkingMemory, AppError> {
+        let connection = self.connection()?;
+        connection
+            .query_row(
+                "SELECT current_focus_json, open_questions_json, pinned_decisions_json, active_assumptions_json, recent_corrections_json, last_tool_actions_json, updated_at
+                 FROM assistant_working_memory
+                 WHERE project_id = ?1 AND session_id = ?2",
+                params![project_id, session_id],
+                |row| {
+                    let current_focus_json: Option<String> = row.get(0)?;
+                    let open_questions_json: String = row.get(1)?;
+                    let pinned_decisions_json: String = row.get(2)?;
+                    let active_assumptions_json: String = row.get(3)?;
+                    let recent_corrections_json: String = row.get(4)?;
+                    let last_tool_actions_json: String = row.get(5)?;
+                    let updated_at: String = row.get(6)?;
+
+                    Ok(WorkingMemory {
+                        project_id: project_id.to_string(),
+                        session_id: session_id.to_string(),
+                        current_focus: current_focus_json
+                            .as_deref()
+                            .and_then(|value| serde_json::from_str::<FocusItem>(value).ok()),
+                        open_questions: serde_json::from_str(&open_questions_json).unwrap_or_default(),
+                        pinned_decisions: serde_json::from_str(&pinned_decisions_json).unwrap_or_default(),
+                        active_assumptions: serde_json::from_str(&active_assumptions_json)
+                            .unwrap_or_default(),
+                        recent_corrections: serde_json::from_str(&recent_corrections_json)
+                            .unwrap_or_default(),
+                        last_tool_actions: serde_json::from_str(&last_tool_actions_json)
+                            .unwrap_or_default(),
+                        updated_at: parse_datetime_or_now(&updated_at),
+                    })
+                },
+            )
+            .optional()
+            .map_err(|_| AppError::StatePoisoned("failed to load assistant working memory"))?
+            .map_or_else(
+                || {
+                    Ok(WorkingMemory {
+                        project_id: project_id.to_string(),
+                        session_id: session_id.to_string(),
+                        ..WorkingMemory::default()
+                    })
+                },
+                Ok,
+            )
+    }
+
+    fn save_working_memory(&self, memory: WorkingMemory) -> Result<WorkingMemory, AppError> {
+        let connection = self.connection()?;
+        let current_focus_json = memory
+            .current_focus
+            .as_ref()
+            .map(serde_json::to_string)
+            .transpose()
+            .map_err(|_| AppError::StatePoisoned("failed to serialize working memory focus"))?;
+        let open_questions_json = serde_json::to_string(&memory.open_questions)
+            .map_err(|_| AppError::StatePoisoned("failed to serialize open questions"))?;
+        let pinned_decisions_json = serde_json::to_string(&memory.pinned_decisions)
+            .map_err(|_| AppError::StatePoisoned("failed to serialize pinned decisions"))?;
+        let active_assumptions_json = serde_json::to_string(&memory.active_assumptions)
+            .map_err(|_| AppError::StatePoisoned("failed to serialize active assumptions"))?;
+        let recent_corrections_json = serde_json::to_string(&memory.recent_corrections)
+            .map_err(|_| AppError::StatePoisoned("failed to serialize recent corrections"))?;
+        let last_tool_actions_json = serde_json::to_string(&memory.last_tool_actions)
+            .map_err(|_| AppError::StatePoisoned("failed to serialize tool actions"))?;
+
+        connection
+            .execute(
+                "INSERT INTO assistant_working_memory
+                    (project_id, session_id, current_focus_json, open_questions_json, pinned_decisions_json, active_assumptions_json, recent_corrections_json, last_tool_actions_json, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+                 ON CONFLICT(project_id, session_id) DO UPDATE SET
+                    current_focus_json = excluded.current_focus_json,
+                    open_questions_json = excluded.open_questions_json,
+                    pinned_decisions_json = excluded.pinned_decisions_json,
+                    active_assumptions_json = excluded.active_assumptions_json,
+                    recent_corrections_json = excluded.recent_corrections_json,
+                    last_tool_actions_json = excluded.last_tool_actions_json,
+                    updated_at = excluded.updated_at",
+                params![
+                    memory.project_id,
+                    memory.session_id,
+                    current_focus_json,
+                    open_questions_json,
+                    pinned_decisions_json,
+                    active_assumptions_json,
+                    recent_corrections_json,
+                    last_tool_actions_json,
+                    memory.updated_at.to_rfc3339(),
+                ],
+            )
+            .map_err(|_| AppError::StatePoisoned("failed to save assistant working memory"))?;
+
+        Ok(memory)
+    }
+}
+
 fn parse_uuid_or_nil(value: &str) -> Uuid {
     Uuid::parse_str(value).unwrap_or_else(|_| Uuid::nil())
+}
+
+fn parse_datetime_or_now(value: &str) -> DateTime<Utc> {
+    DateTime::parse_from_rfc3339(value)
+        .map(|dt| dt.with_timezone(&Utc))
+        .unwrap_or_else(|_| Utc::now())
+}
+
+fn map_document_ontology_link_row(
+    row: &rusqlite::Row<'_>,
+) -> rusqlite::Result<DocumentOntologyLink> {
+    let id: String = row.get(0)?;
+    let status: String = row.get(5)?;
+    let provenance_id: Option<String> = row.get(6)?;
+    let created_at: String = row.get(7)?;
+    let updated_at: String = row.get(8)?;
+
+    Ok(DocumentOntologyLink {
+        id: parse_uuid_or_nil(&id),
+        document_ref: row.get(1)?,
+        ontology_ref: row.get(2)?,
+        link_kind: row.get(3)?,
+        confidence: row.get(4)?,
+        status: link_status_from_str(&status),
+        provenance_id: provenance_id.as_deref().map(parse_uuid_or_nil),
+        created_at: parse_datetime_or_now(&created_at),
+        updated_at: parse_datetime_or_now(&updated_at),
+    })
 }
 
 fn ontology_entity_kind_to_str(kind: &OntologyEntityKind) -> &'static str {
@@ -757,6 +1464,7 @@ fn ontology_relationship_kind_to_str(kind: &OntologyRelationshipKind) -> &'stati
         OntologyRelationshipKind::SupportsCharacter => "supports_character",
         OntologyRelationshipKind::OpposesCharacter => "opposes_character",
         OntologyRelationshipKind::AdvisesCharacter => "advises_character",
+        OntologyRelationshipKind::SiblingOfCharacter => "sibling_of_character",
     }
 }
 
@@ -766,6 +1474,7 @@ fn ontology_relationship_kind_from_str(value: &str) -> OntologyRelationshipKind 
         "supports_character" => OntologyRelationshipKind::SupportsCharacter,
         "opposes_character" => OntologyRelationshipKind::OpposesCharacter,
         "advises_character" => OntologyRelationshipKind::AdvisesCharacter,
+        "sibling_of_character" => OntologyRelationshipKind::SiblingOfCharacter,
         _ => OntologyRelationshipKind::NarrativeProjection,
     }
 }
@@ -783,5 +1492,211 @@ fn change_type_from_str(value: &str) -> crate::domain::ChangeType {
         "delete" => crate::domain::ChangeType::Delete,
         "replace" => crate::domain::ChangeType::Replace,
         _ => crate::domain::ChangeType::Insert,
+    }
+}
+
+fn sync_source_kind_to_str(value: &SyncSourceKind) -> &'static str {
+    match value {
+        SyncSourceKind::NarrativeChat => "narrative_chat",
+        SyncSourceKind::ScreenplayExtraction => "screenplay_extraction",
+        SyncSourceKind::OntologySuggestion => "ontology_suggestion",
+        SyncSourceKind::LintResolution => "lint_resolution",
+    }
+}
+
+fn sync_source_kind_from_str(value: &str) -> SyncSourceKind {
+    match value {
+        "screenplay_extraction" => SyncSourceKind::ScreenplayExtraction,
+        "ontology_suggestion" => SyncSourceKind::OntologySuggestion,
+        "lint_resolution" => SyncSourceKind::LintResolution,
+        _ => SyncSourceKind::NarrativeChat,
+    }
+}
+
+fn sync_run_status_to_str(value: &SyncRunStatus) -> &'static str {
+    match value {
+        SyncRunStatus::Running => "running",
+        SyncRunStatus::Completed => "completed",
+        SyncRunStatus::Failed => "failed",
+    }
+}
+
+fn sync_run_status_from_str(value: &str) -> SyncRunStatus {
+    match value {
+        "completed" => SyncRunStatus::Completed,
+        "failed" => SyncRunStatus::Failed,
+        _ => SyncRunStatus::Running,
+    }
+}
+
+fn sync_target_layer_to_str(value: &SyncTargetLayer) -> &'static str {
+    match value {
+        SyncTargetLayer::Document => "document",
+        SyncTargetLayer::Ontology => "ontology",
+        SyncTargetLayer::Link => "link",
+    }
+}
+
+fn sync_target_layer_from_str(value: &str) -> SyncTargetLayer {
+    match value {
+        "document" => SyncTargetLayer::Document,
+        "link" => SyncTargetLayer::Link,
+        _ => SyncTargetLayer::Ontology,
+    }
+}
+
+fn sync_target_kind_to_str(value: &SyncTargetKind) -> &'static str {
+    match value {
+        SyncTargetKind::Character => "character",
+        SyncTargetKind::Event => "event",
+        SyncTargetKind::Relationship => "relationship",
+        SyncTargetKind::ScreenplayPatch => "screenplay_patch",
+        SyncTargetKind::DocumentMetadata => "document_metadata",
+        SyncTargetKind::Link => "link",
+        SyncTargetKind::LintFinding => "lint_finding",
+    }
+}
+
+fn sync_target_kind_from_str(value: &str) -> SyncTargetKind {
+    match value {
+        "event" => SyncTargetKind::Event,
+        "relationship" => SyncTargetKind::Relationship,
+        "screenplay_patch" => SyncTargetKind::ScreenplayPatch,
+        "document_metadata" => SyncTargetKind::DocumentMetadata,
+        "link" => SyncTargetKind::Link,
+        "lint_finding" => SyncTargetKind::LintFinding,
+        _ => SyncTargetKind::Character,
+    }
+}
+
+fn sync_action_kind_to_str(value: &SyncActionKind) -> &'static str {
+    match value {
+        SyncActionKind::Create => "create",
+        SyncActionKind::Update => "update",
+        SyncActionKind::Merge => "merge",
+        SyncActionKind::Relink => "relink",
+        SyncActionKind::Patch => "patch",
+        SyncActionKind::Delete => "delete",
+    }
+}
+
+fn sync_action_kind_from_str(value: &str) -> SyncActionKind {
+    match value {
+        "update" => SyncActionKind::Update,
+        "merge" => SyncActionKind::Merge,
+        "relink" => SyncActionKind::Relink,
+        "patch" => SyncActionKind::Patch,
+        "delete" => SyncActionKind::Delete,
+        _ => SyncActionKind::Create,
+    }
+}
+
+fn candidate_status_to_str(value: &CandidateStatus) -> &'static str {
+    match value {
+        CandidateStatus::Draft => "draft",
+        CandidateStatus::Ready => "ready",
+        CandidateStatus::Applied => "applied",
+        CandidateStatus::Rejected => "rejected",
+        CandidateStatus::Superseded => "superseded",
+        CandidateStatus::Expired => "expired",
+        CandidateStatus::Conflicted => "conflicted",
+    }
+}
+
+fn candidate_status_from_str(value: &str) -> CandidateStatus {
+    match value {
+        "ready" => CandidateStatus::Ready,
+        "applied" => CandidateStatus::Applied,
+        "rejected" => CandidateStatus::Rejected,
+        "superseded" => CandidateStatus::Superseded,
+        "expired" => CandidateStatus::Expired,
+        "conflicted" => CandidateStatus::Conflicted,
+        _ => CandidateStatus::Draft,
+    }
+}
+
+fn conflict_kind_to_str(value: &crate::domain::ConflictKind) -> &'static str {
+    match value {
+        crate::domain::ConflictKind::AmbiguousMatch => "ambiguous_match",
+        crate::domain::ConflictKind::DuplicateEntity => "duplicate_entity",
+        crate::domain::ConflictKind::VersionMismatch => "version_mismatch",
+        crate::domain::ConflictKind::ContradictoryTimeline => "contradictory_timeline",
+        crate::domain::ConflictKind::UnsupportedPatch => "unsupported_patch",
+    }
+}
+
+fn conflict_kind_from_str(value: &str) -> crate::domain::ConflictKind {
+    match value {
+        "duplicate_entity" => crate::domain::ConflictKind::DuplicateEntity,
+        "version_mismatch" => crate::domain::ConflictKind::VersionMismatch,
+        "contradictory_timeline" => crate::domain::ConflictKind::ContradictoryTimeline,
+        "unsupported_patch" => crate::domain::ConflictKind::UnsupportedPatch,
+        _ => crate::domain::ConflictKind::AmbiguousMatch,
+    }
+}
+
+fn link_status_to_str(value: &crate::domain::LinkStatus) -> &'static str {
+    match value {
+        crate::domain::LinkStatus::Linked => "linked",
+        crate::domain::LinkStatus::Suggested => "suggested",
+        crate::domain::LinkStatus::Conflicted => "conflicted",
+        crate::domain::LinkStatus::Orphaned => "orphaned",
+    }
+}
+
+fn link_status_from_str(value: &str) -> crate::domain::LinkStatus {
+    match value {
+        "suggested" => crate::domain::LinkStatus::Suggested,
+        "conflicted" => crate::domain::LinkStatus::Conflicted,
+        "orphaned" => crate::domain::LinkStatus::Orphaned,
+        _ => crate::domain::LinkStatus::Linked,
+    }
+}
+
+fn lint_scope_to_str(value: &LintScope) -> &'static str {
+    match value {
+        LintScope::Document => "document",
+        LintScope::Ontology => "ontology",
+        LintScope::Alignment => "alignment",
+    }
+}
+
+fn lint_scope_from_str(value: &str) -> LintScope {
+    match value {
+        "document" => LintScope::Document,
+        "alignment" => LintScope::Alignment,
+        _ => LintScope::Ontology,
+    }
+}
+
+fn lint_severity_to_str(value: &LintSeverity) -> &'static str {
+    match value {
+        LintSeverity::Info => "info",
+        LintSeverity::Warning => "warning",
+        LintSeverity::Error => "error",
+    }
+}
+
+fn lint_severity_from_str(value: &str) -> LintSeverity {
+    match value {
+        "warning" => LintSeverity::Warning,
+        "error" => LintSeverity::Error,
+        _ => LintSeverity::Info,
+    }
+}
+
+fn lint_status_to_str(value: &LintStatus) -> &'static str {
+    match value {
+        LintStatus::Open => "open",
+        LintStatus::Resolved => "resolved",
+        LintStatus::Dismissed => "dismissed",
+    }
+}
+
+fn lint_status_from_str(value: &str) -> LintStatus {
+    match value {
+        "resolved" => LintStatus::Resolved,
+        "dismissed" => LintStatus::Dismissed,
+        _ => LintStatus::Open,
     }
 }
