@@ -21,6 +21,39 @@ pub struct NarrativeEvent {
     pub participants: Vec<Uuid>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum NarrativeCommitTarget {
+    Character,
+    Event,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum NarrativeChangeKind {
+    AddCharacter,
+    UpdateCharacter,
+    AddEvent,
+    UpdateEvent,
+    AddRelationship,
+    UpdateRelationship,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NarrativeChangeSummary {
+    pub kind: NarrativeChangeKind,
+    pub label: String,
+    pub detail: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NarrativeMessagePreview {
+    pub prompt: String,
+    pub suggested_target: NarrativeCommitTarget,
+    pub character: Option<NarrativeCharacter>,
+    pub event: Option<NarrativeEvent>,
+    pub relationships: Vec<OntologyRelationship>,
+    pub changes: Vec<NarrativeChangeSummary>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct NarrativeMetrics {
     pub scene_count: usize,

@@ -1,5 +1,6 @@
 use crate::api::dto::{
-    NarrativeCharacterDto, NarrativeEventDto, NarrativeNudgeDto, NarrativeSnapshotDto,
+    LlmStatusDto, NarrativeCommitTargetDto, NarrativeNudgeDto, NarrativeSnapshotDto,
+    PreviewNarrativeInputDto,
 };
 use crate::api::tauri;
 use leptos::*;
@@ -13,17 +14,33 @@ pub fn create_nudge_resource(
     })
 }
 
-pub fn create_character_action() -> Action<String, Result<NarrativeCharacterDto, String>> {
-    create_action(|description: &String| {
-        let description = description.clone();
-        async move { tauri::parse_character(description).await }
+pub fn create_llm_status_resource() -> Resource<(), Result<LlmStatusDto, String>> {
+    create_local_resource(|| (), |_| async move { tauri::get_llm_status().await })
+}
+
+pub fn create_preview_resource(
+    prompt: ReadSignal<String>,
+) -> Resource<String, Result<PreviewNarrativeInputDto, String>> {
+    create_local_resource(move || prompt.get(), |prompt| async move {
+        if prompt.trim().is_empty() {
+            Ok(PreviewNarrativeInputDto {
+                prompt,
+                suggested_target: NarrativeCommitTargetDto::Character,
+                character: None,
+                event: None,
+                relationships: Vec::new(),
+                changes: Vec::new(),
+            })
+        } else {
+            tauri::preview_narrative_input(prompt).await
+        }
     })
 }
 
-pub fn create_event_action() -> Action<String, Result<NarrativeEventDto, String>> {
-    create_action(|description: &String| {
-        let description = description.clone();
-        async move { tauri::parse_event(description).await }
+pub fn create_commit_action() -> Action<String, Result<PreviewNarrativeInputDto, String>> {
+    create_action(|prompt: &String| {
+        let prompt = prompt.clone();
+        async move { tauri::commit_narrative_input(prompt).await }
     })
 }
 

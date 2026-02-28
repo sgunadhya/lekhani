@@ -6,12 +6,14 @@ mod ports;
 use adapters::db::{
     MemoryNarrativeRepository, MemoryScreenplayRepository, SqliteScreenplayRepository,
 };
+#[cfg(target_os = "macos")]
+use adapters::llm::FmRsNarrativeEngine;
 use adapters::llm::StubNarrativeEngine;
 use adapters::tauri::{
-    export_fountain_document, get_active_screenplay, get_current_project,
-    get_narrative_snapshot, get_nudge, get_screenplays, get_time, import_fountain_document,
-    open_project_document, parse_character, parse_event, save_project_document_as,
-    save_screenplay, AppState,
+    commit_narrative_input, export_fountain_document, get_active_screenplay,
+    get_current_project, get_llm_status, get_narrative_snapshot, get_nudge, get_screenplays,
+    get_time, import_fountain_document, open_project_document, parse_character, parse_event,
+    preview_narrative_input, save_project_document_as, save_screenplay, AppState,
 };
 use std::sync::Arc;
 use tauri::{Emitter, Manager, RunEvent};
@@ -55,13 +57,17 @@ pub fn run() {
                 }
             }
 
+            let (llm_backend, llm_detail) = narrative_backend_status();
+
             app.manage(AppState::new(
                 screenplay_repository,
                 narrative_repository,
                 sqlite_repository,
-                Box::<StubNarrativeEngine>::default(),
-                Box::<StubNarrativeEngine>::default(),
-                Box::<StubNarrativeEngine>::default(),
+                llm_backend,
+                llm_detail,
+                narrative_character_parser(),
+                narrative_event_parser(),
+                narrative_nudge_generator(),
             ));
 
             if let Some(project_path) = startup_project_path() {
@@ -73,6 +79,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             get_time,
+            get_llm_status,
             get_active_screenplay,
             get_current_project,
             get_narrative_snapshot,
@@ -82,6 +89,8 @@ pub fn run() {
             export_fountain_document,
             open_project_document,
             save_project_document_as,
+            preview_narrative_input,
+            commit_narrative_input,
             parse_character,
             parse_event,
             get_nudge
@@ -136,4 +145,46 @@ fn startup_project_path() -> Option<std::path::PathBuf> {
             )
                 && path.exists()
         })
+}
+
+fn narrative_character_parser() -> Box<dyn ports::CharacterParser> {
+    #[cfg(target_os = "macos")]
+    if let Ok(engine) = FmRsNarrativeEngine::new() {
+        return Box::new(engine);
+    }
+
+    Box::<StubNarrativeEngine>::default()
+}
+
+fn narrative_event_parser() -> Box<dyn ports::EventParser> {
+    #[cfg(target_os = "macos")]
+    if let Ok(engine) = FmRsNarrativeEngine::new() {
+        return Box::new(engine);
+    }
+
+    Box::<StubNarrativeEngine>::default()
+}
+
+fn narrative_nudge_generator() -> Box<dyn ports::NudgeGenerator> {
+    #[cfg(target_os = "macos")]
+    if let Ok(engine) = FmRsNarrativeEngine::new() {
+        return Box::new(engine);
+    }
+
+    Box::<StubNarrativeEngine>::default()
+}
+
+fn narrative_backend_status() -> (String, String) {
+    #[cfg(target_os = "macos")]
+    if FmRsNarrativeEngine::new().is_ok() {
+        return (
+            "fm-rs".to_string(),
+            "Apple Foundation Models is available for structured narrative hydration.".to_string(),
+        );
+    }
+
+    (
+        "fallback".to_string(),
+        "Using the local heuristic hydrator because Foundation Models is unavailable.".to_string(),
+    )
 }

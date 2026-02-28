@@ -7,8 +7,6 @@ pub struct Screenplay {
     pub id: Uuid,
     pub title: String,
     pub fountain_text: String,
-    #[serde(skip)]
-    pub parsed: Option<()>,
     pub version: u64,
     pub changes: Vec<ScreenplayChange>,
     pub created_at: DateTime<Utc>,

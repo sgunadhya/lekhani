@@ -15,10 +15,13 @@ pub struct OntologyEntity {
     pub summary: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum OntologyRelationshipKind {
     NarrativeProjection,
     ParticipantInEvent,
+    SupportsCharacter,
+    OpposesCharacter,
+    AdvisesCharacter,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

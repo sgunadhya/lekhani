@@ -55,6 +55,50 @@ pub struct ParseDescriptionRequest {
     pub description: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub enum NarrativeCommitTargetDto {
+    Character,
+    Event,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum NarrativeChangeKindDto {
+    AddCharacter,
+    UpdateCharacter,
+    AddEvent,
+    UpdateEvent,
+    AddRelationship,
+    UpdateRelationship,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NarrativeChangeSummaryDto {
+    pub kind: NarrativeChangeKindDto,
+    pub label: String,
+    pub detail: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PreviewNarrativeInputDto {
+    pub prompt: String,
+    pub suggested_target: NarrativeCommitTargetDto,
+    pub character: Option<NarrativeCharacterDto>,
+    pub event: Option<NarrativeEventDto>,
+    pub relationships: Vec<OntologyRelationshipDto>,
+    pub changes: Vec<NarrativeChangeSummaryDto>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CommitNarrativeInputRequest {
+    pub prompt: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LlmStatusDto {
+    pub backend: String,
+    pub detail: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NarrativeCharacterDto {
     pub id: Uuid,
@@ -112,6 +156,9 @@ pub struct OntologyEntityDto {
 pub enum OntologyRelationshipKindDto {
     NarrativeProjection,
     ParticipantInEvent,
+    SupportsCharacter,
+    OpposesCharacter,
+    AdvisesCharacter,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

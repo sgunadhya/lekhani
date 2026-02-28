@@ -1,7 +1,8 @@
 use crate::api::dto::{
-    DocumentFileDto, NarrativeCharacterDto, NarrativeEventDto, NarrativeNudgeDto,
-    NarrativeSnapshotDto, ParseDescriptionRequest, SaveDocumentRequest, SaveScreenplayRequest,
-    ScreenplayDto,
+    CommitNarrativeInputRequest, DocumentFileDto, LlmStatusDto, NarrativeNudgeDto,
+    NarrativeSnapshotDto, ParseDescriptionRequest, PreviewNarrativeInputDto,
+    SaveDocumentRequest,
+    SaveScreenplayRequest, ScreenplayDto,
 };
 use gloo_utils::format::JsValueSerdeExt;
 use js_sys::{Function, Object, Promise, Reflect};
@@ -47,8 +48,20 @@ async fn invoke_tauri(cmd: &str, args: JsValue) -> Result<JsValue, String> {
         .map_err(|err| format!("invoke error: {err:?}"))
 }
 
+fn named_request_args<T: serde::Serialize>(request: &T) -> Result<JsValue, String> {
+    let payload = serde_json::json!({ "request": request });
+    JsValue::from_serde(&payload).map_err(|err| format!("JsValue conversion error: {err}"))
+}
+
 pub async fn get_screenplays() -> Result<Vec<ScreenplayDto>, String> {
     let js_value = invoke_tauri("get_screenplays", Object::new().into()).await?;
+    js_value
+        .into_serde()
+        .map_err(|err| format!("Deserialize error: {err}"))
+}
+
+pub async fn get_llm_status() -> Result<LlmStatusDto, String> {
+    let js_value = invoke_tauri("get_llm_status", Object::new().into()).await?;
     js_value
         .into_serde()
         .map_err(|err| format!("Deserialize error: {err}"))
@@ -63,8 +76,7 @@ pub async fn get_current_project() -> Result<DocumentFileDto, String> {
 
 pub async fn save_screenplay(screenplay: ScreenplayDto) -> Result<ScreenplayDto, String> {
     let args = SaveScreenplayRequest { screenplay };
-    let js_args =
-        JsValue::from_serde(&args).map_err(|err| format!("JsValue conversion error: {err}"))?;
+    let js_args = named_request_args(&args)?;
     let js_value = invoke_tauri("save_screenplay", js_args).await?;
     js_value
         .into_serde()
@@ -83,8 +95,7 @@ pub async fn export_fountain_document(screenplay: ScreenplayDto) -> Result<Optio
         screenplay,
         file_path: None,
     };
-    let js_args =
-        JsValue::from_serde(&args).map_err(|err| format!("JsValue conversion error: {err}"))?;
+    let js_args = named_request_args(&args)?;
     let js_value = invoke_tauri("export_fountain_document", js_args).await?;
     js_value
         .into_serde()
@@ -106,29 +117,30 @@ pub async fn save_project_document_as(
         screenplay,
         file_path,
     };
-    let js_args =
-        JsValue::from_serde(&args).map_err(|err| format!("JsValue conversion error: {err}"))?;
+    let js_args = named_request_args(&args)?;
     let js_value = invoke_tauri("save_project_document_as", js_args).await?;
     js_value
         .into_serde()
         .map_err(|err| format!("Deserialize error: {err}"))
 }
 
-pub async fn parse_character(description: String) -> Result<NarrativeCharacterDto, String> {
+pub async fn preview_narrative_input(
+    description: String,
+) -> Result<PreviewNarrativeInputDto, String> {
     let args = ParseDescriptionRequest { description };
-    let js_args =
-        JsValue::from_serde(&args).map_err(|err| format!("JsValue conversion error: {err}"))?;
-    let js_value = invoke_tauri("parse_character", js_args).await?;
+    let js_args = named_request_args(&args)?;
+    let js_value = invoke_tauri("preview_narrative_input", js_args).await?;
     js_value
         .into_serde()
         .map_err(|err| format!("Deserialize error: {err}"))
 }
 
-pub async fn parse_event(description: String) -> Result<NarrativeEventDto, String> {
-    let args = ParseDescriptionRequest { description };
-    let js_args =
-        JsValue::from_serde(&args).map_err(|err| format!("JsValue conversion error: {err}"))?;
-    let js_value = invoke_tauri("parse_event", js_args).await?;
+pub async fn commit_narrative_input(
+    prompt: String,
+) -> Result<PreviewNarrativeInputDto, String> {
+    let args = CommitNarrativeInputRequest { prompt };
+    let js_args = named_request_args(&args)?;
+    let js_value = invoke_tauri("commit_narrative_input", js_args).await?;
     js_value
         .into_serde()
         .map_err(|err| format!("Deserialize error: {err}"))

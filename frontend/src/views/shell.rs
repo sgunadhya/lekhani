@@ -149,25 +149,11 @@ pub fn WorkspaceShell() -> impl IntoView {
 
                 <div class="document-actions">
                     <button class="secondary-button" on:click=open_document>"Open"</button>
-                    <button class="secondary-button" on:click=import_fountain>"Import Fountain"</button>
-                    <button class="secondary-button" on:click=export_fountain>"Export Fountain"</button>
-                    <button class="secondary-button" on:click=refresh_nudge>"Refresh Nudge"</button>
                     <button
                         class="secondary-button"
                         on:click=move |_| save_project(false)
                     >
                         "Save"
-                    </button>
-                    <button class="secondary-button" on:click=move |_| save_project(true)>"Save As"</button>
-                    <button
-                        class="secondary-button"
-                        on:click=move |_| {
-                            spawn_local(async move {
-                                _ = active_project.refetch();
-                            });
-                        }
-                    >
-                        "Reload"
                     </button>
                 </div>
             </header>
@@ -182,28 +168,46 @@ pub fn WorkspaceShell() -> impl IntoView {
                 </main>
 
                 <aside class="workspace-rail">
-                    <div class="rail-card">
-                        <span class="eyebrow">"Project File"</span>
+                    <section class="rail-section">
+                        <span class="eyebrow">"Project"</span>
                         <p>{move || document_context.file_path.get().unwrap_or_else(|| "Unsaved .lekhani project".to_string())}</p>
-                    </div>
+                        <div class="rail-actions">
+                            <button class="secondary-button" on:click=move |_| save_project(true)>"Save As"</button>
+                            <button class="secondary-button" on:click=import_fountain>"Import Fountain"</button>
+                            <button class="secondary-button" on:click=export_fountain>"Export Fountain"</button>
+                            <button
+                                class="secondary-button"
+                                on:click=move |_| {
+                                    spawn_local(async move {
+                                        _ = active_project.refetch();
+                                    });
+                                }
+                            >
+                                "Reload"
+                            </button>
+                        </div>
+                    </section>
 
-                    <div class="rail-card">
+                    <section class="rail-section">
                         <span class="eyebrow">"Current Nudge"</span>
                         {move || match nudge.get() {
                             None => view! { <p>"Loading nudge..."</p> }.into_view(),
                             Some(Ok(nudge)) => view! { <p>{nudge.message}</p> }.into_view(),
                             Some(Err(err)) => view! { <p class="error">{err}</p> }.into_view(),
                         }}
-                    </div>
+                    </section>
 
-                    <div class="rail-card">
+                    <section class="rail-section">
                         <span class="eyebrow">"Setup Focus"</span>
                         <ul class="focus-list">
                             <li>"Define the lead and their core conflict"</li>
                             <li>"Clarify the opening event"</li>
                             <li>"Link narrative setup back to Fountain scenes"</li>
                         </ul>
-                    </div>
+                        <div class="rail-actions">
+                            <button class="secondary-button" on:click=refresh_nudge>"Refresh Nudge"</button>
+                        </div>
+                    </section>
                 </aside>
             </div>
         </div>

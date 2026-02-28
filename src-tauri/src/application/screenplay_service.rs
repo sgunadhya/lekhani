@@ -23,7 +23,6 @@ impl<R: ScreenplayRepository> ScreenplayService<R> {
             id: Uuid::new_v4(),
             title: "Untitled Screenplay".to_string(),
             fountain_text: String::new(),
-            parsed: None,
             version: 1,
             changes: Vec::new(),
             created_at: Utc::now(),

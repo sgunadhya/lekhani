@@ -486,7 +486,6 @@ impl ScreenplayRepository for SqliteScreenplayRepository {
                     id: Uuid::parse_str(&id).unwrap_or_else(|_| Uuid::nil()),
                     title,
                     fountain_text,
-                    parsed: None,
                     version,
                     changes,
                     created_at: DateTime::parse_from_rfc3339(&created_at)
@@ -684,6 +683,34 @@ impl NarrativeRepository for SqliteScreenplayRepository {
         Ok(event)
     }
 
+    fn save_relationship(
+        &self,
+        relationship: OntologyRelationship,
+    ) -> Result<OntologyRelationship, AppError> {
+        let connection = self.connection()?;
+        connection
+            .execute(
+                "INSERT INTO ontology_relationships
+                    (id, source_entity_id, target_entity_id, relationship_kind, summary)
+                 VALUES (?1, ?2, ?3, ?4, ?5)
+                 ON CONFLICT(id) DO UPDATE SET
+                    source_entity_id = excluded.source_entity_id,
+                    target_entity_id = excluded.target_entity_id,
+                    relationship_kind = excluded.relationship_kind,
+                    summary = excluded.summary",
+                params![
+                    relationship.id.to_string(),
+                    relationship.source_id.to_string(),
+                    relationship.target_id.to_string(),
+                    ontology_relationship_kind_to_str(&relationship.kind),
+                    relationship.summary,
+                ],
+            )
+            .map_err(|_| AppError::StatePoisoned("failed to save ontology relationship"))?;
+
+        Ok(relationship)
+    }
+
     fn load_snapshot(&self) -> Result<NarrativeSnapshot, AppError> {
         let connection = self.connection()?;
         let characters = Self::load_characters(&connection)?;
@@ -727,12 +754,18 @@ fn ontology_relationship_kind_to_str(kind: &OntologyRelationshipKind) -> &'stati
     match kind {
         OntologyRelationshipKind::NarrativeProjection => "narrative_projection",
         OntologyRelationshipKind::ParticipantInEvent => "participant_in_event",
+        OntologyRelationshipKind::SupportsCharacter => "supports_character",
+        OntologyRelationshipKind::OpposesCharacter => "opposes_character",
+        OntologyRelationshipKind::AdvisesCharacter => "advises_character",
     }
 }
 
 fn ontology_relationship_kind_from_str(value: &str) -> OntologyRelationshipKind {
     match value {
         "participant_in_event" => OntologyRelationshipKind::ParticipantInEvent,
+        "supports_character" => OntologyRelationshipKind::SupportsCharacter,
+        "opposes_character" => OntologyRelationshipKind::OpposesCharacter,
+        "advises_character" => OntologyRelationshipKind::AdvisesCharacter,
         _ => OntologyRelationshipKind::NarrativeProjection,
     }
 }

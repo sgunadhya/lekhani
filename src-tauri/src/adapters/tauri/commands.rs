@@ -1,16 +1,25 @@
 use crate::adapters::tauri::dto::{
-    DocumentFileDto, NarrativeCharacterDto, NarrativeEventDto, NarrativeNudgeDto,
-    NarrativeSnapshotDto, ParseDescriptionRequest, SaveDocumentRequest, SaveScreenplayRequest,
-    ScreenplayDto,
+    CommitNarrativeInputRequest, DocumentFileDto, LlmStatusDto, NarrativeCharacterDto,
+    NarrativeCommitTargetDto, NarrativeEventDto, NarrativeNudgeDto, NarrativeSnapshotDto,
+    ParseDescriptionRequest, PreviewNarrativeInputDto, SaveDocumentRequest,
+    SaveScreenplayRequest, ScreenplayDto,
 };
 use crate::adapters::tauri::state::AppState;
 use std::path::PathBuf;
-use tauri::{AppHandle, State};
+use tauri::{AppHandle, Manager, State};
 use tauri_plugin_dialog::DialogExt;
 
 #[tauri::command]
 pub fn get_time() -> String {
     format!("Current time: {}", chrono::Local::now().to_rfc2822())
+}
+
+#[tauri::command]
+pub fn get_llm_status(state: State<'_, AppState>) -> Result<LlmStatusDto, String> {
+    Ok(LlmStatusDto {
+        backend: state.llm_backend.clone(),
+        detail: state.llm_detail.clone(),
+    })
 }
 
 #[tauri::command]
@@ -178,11 +187,84 @@ pub fn parse_character(
     state: State<'_, AppState>,
     request: ParseDescriptionRequest,
 ) -> Result<NarrativeCharacterDto, String> {
+    let snapshot = state.get_snapshot()?;
     let character = state
         .narrative_service
-        .parse_character(&request.description)?;
+        .parse_character(&request.description, &snapshot)?;
     state.store_character(character.clone())?;
     Ok(character)
+}
+
+#[tauri::command]
+pub async fn preview_narrative_input(
+    app: AppHandle,
+    request: ParseDescriptionRequest,
+) -> Result<PreviewNarrativeInputDto, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<AppState>();
+        preview_narrative_input_inner(&state, request)
+    })
+    .await
+    .map_err(|err| format!("failed to join preview task: {err}"))?
+}
+
+#[tauri::command]
+pub async fn commit_narrative_input(
+    app: AppHandle,
+    request: CommitNarrativeInputRequest,
+) -> Result<PreviewNarrativeInputDto, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<AppState>();
+        commit_narrative_input_inner(&state, request)
+    })
+    .await
+    .map_err(|err| format!("failed to join commit task: {err}"))?
+}
+
+fn preview_narrative_input_inner(
+    state: &AppState,
+    request: ParseDescriptionRequest,
+) -> Result<PreviewNarrativeInputDto, String> {
+    let snapshot = state.get_snapshot()?;
+    state
+        .narrative_service
+        .preview_message(&request.description, &snapshot)
+}
+
+fn commit_narrative_input_inner(
+    state: &AppState,
+    request: CommitNarrativeInputRequest,
+) -> Result<PreviewNarrativeInputDto, String> {
+    let prompt = request.prompt.trim().to_string();
+    if prompt.is_empty() {
+        return Err("prompt is empty".to_string());
+    }
+
+    let snapshot = state.get_snapshot()?;
+    let preview = state.narrative_service.preview_message(&prompt, &snapshot)?;
+
+    match preview.suggested_target {
+        NarrativeCommitTargetDto::Character => {
+            let character = preview
+                .character
+                .clone()
+                .ok_or_else(|| "unable to hydrate a character preview from this input".to_string())?;
+            state.store_character(character)?;
+        }
+        NarrativeCommitTargetDto::Event => {
+            let event = preview
+                .event
+                .clone()
+                .ok_or_else(|| "unable to hydrate an event preview from this input".to_string())?;
+            state.store_event(event)?;
+        }
+    }
+
+    for relationship in preview.relationships.iter().cloned() {
+        state.store_relationship(relationship)?;
+    }
+
+    Ok(preview)
 }
 
 #[tauri::command]
@@ -190,16 +272,18 @@ pub fn parse_event(
     state: State<'_, AppState>,
     request: ParseDescriptionRequest,
 ) -> Result<NarrativeEventDto, String> {
+    let snapshot = state.get_snapshot()?;
     let event = state
         .narrative_service
-        .parse_event(&request.description)?;
+        .parse_event(&request.description, &snapshot)?;
     state.store_event(event.clone())?;
     Ok(event)
 }
 
 #[tauri::command]
 pub fn get_nudge(state: State<'_, AppState>) -> Result<NarrativeNudgeDto, String> {
-    state.narrative_service.get_nudge()
+    let snapshot = state.get_snapshot()?;
+    state.narrative_service.get_nudge(&snapshot)
 }
 
 #[tauri::command]

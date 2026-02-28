@@ -1,6 +1,6 @@
 use crate::adapters::db::SqliteScreenplayRepository;
 use crate::application::{NarrativeService, ScreenplayService};
-use crate::domain::{NarrativeCharacter, NarrativeEvent, NarrativeSnapshot};
+use crate::domain::{NarrativeCharacter, NarrativeEvent, NarrativeSnapshot, OntologyRelationship};
 use crate::ports::{
     CharacterParser, EventParser, NarrativeRepository, NudgeGenerator, ScreenplayRepository,
 };
@@ -16,6 +16,8 @@ pub struct AppState {
     >,
     pub narrative_repository: Box<dyn NarrativeRepository>,
     pub sqlite_repository: Option<Arc<SqliteScreenplayRepository>>,
+    pub llm_backend: String,
+    pub llm_detail: String,
 }
 
 impl AppState {
@@ -23,6 +25,8 @@ impl AppState {
         screenplay_repository: Box<dyn ScreenplayRepository>,
         narrative_repository: Box<dyn NarrativeRepository>,
         sqlite_repository: Option<Arc<SqliteScreenplayRepository>>,
+        llm_backend: String,
+        llm_detail: String,
         character_parser: Box<dyn CharacterParser>,
         event_parser: Box<dyn EventParser>,
         nudge_generator: Box<dyn NudgeGenerator>,
@@ -36,6 +40,8 @@ impl AppState {
             ),
             narrative_repository,
             sqlite_repository,
+            llm_backend,
+            llm_detail,
         }
     }
 }
@@ -70,6 +76,13 @@ impl AppState {
         snapshot.metrics.event_count = snapshot.events.len();
 
         Ok(snapshot)
+    }
+
+    pub fn store_relationship(&self, relationship: OntologyRelationship) -> Result<(), String> {
+        self.narrative_repository
+            .save_relationship(relationship)
+            .map(|_| ())
+            .map_err(|err| err.to_string())
     }
 
     pub fn current_project_path(&self) -> Result<Option<String>, String> {

@@ -3,7 +3,8 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::domain::{
-    ChangeType, NarrativeCharacter, NarrativeEvent, NarrativeNudge, NarrativeSnapshot,
+    ChangeType, NarrativeCharacter, NarrativeCommitTarget, NarrativeEvent,
+    NarrativeMessagePreview, NarrativeNudge, NarrativeSnapshot,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -52,7 +53,20 @@ pub struct ParseDescriptionRequest {
     pub description: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CommitNarrativeInputRequest {
+    pub prompt: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LlmStatusDto {
+    pub backend: String,
+    pub detail: String,
+}
+
 pub type NarrativeCharacterDto = NarrativeCharacter;
+pub type NarrativeCommitTargetDto = NarrativeCommitTarget;
 pub type NarrativeEventDto = NarrativeEvent;
+pub type PreviewNarrativeInputDto = NarrativeMessagePreview;
 pub type NarrativeNudgeDto = NarrativeNudge;
 pub type NarrativeSnapshotDto = NarrativeSnapshot;

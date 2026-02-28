@@ -53,7 +53,6 @@ impl From<ScreenplayDto> for Screenplay {
             id: value.id,
             title: value.title,
             fountain_text: value.fountain_text,
-            parsed: None,
             version: value.version,
             changes: value.changes.into_iter().map(Into::into).collect(),
             created_at: value.created_at,

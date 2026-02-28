@@ -123,6 +123,24 @@ impl NarrativeRepository for MemoryNarrativeRepository {
         Ok(event)
     }
 
+    fn save_relationship(
+        &self,
+        relationship: OntologyRelationship,
+    ) -> Result<OntologyRelationship, AppError> {
+        let mut snapshot = self
+            .snapshot
+            .lock()
+            .map_err(|_| AppError::StatePoisoned("narrative store lock poisoned"))?;
+
+        snapshot
+            .ontology_graph
+            .relationships
+            .retain(|existing| existing.id != relationship.id);
+        snapshot.ontology_graph.relationships.push(relationship.clone());
+
+        Ok(relationship)
+    }
+
     fn load_snapshot(&self) -> Result<NarrativeSnapshot, AppError> {
         self.snapshot
             .lock()
