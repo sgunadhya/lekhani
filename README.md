@@ -8,11 +8,11 @@ It treats the screenplay as a document, stores projects in `.lekhani` files back
 
 ### Narrative Mode
 
-![Narrative mode](docs/screenshots/narrative-mode.png)
+![Narrative mode](docs/screenshots/narrative-mode-v2.png)
 
 ### Visual Inspector
 
-![Visual inspector](docs/screenshots/visual-inspector.png)
+![Visual inspector](docs/screenshots/visual-inspector-v2.png)
 
 ## Motion Demos
 
