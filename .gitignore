@@ -10,9 +10,8 @@
 # Local runtime artifacts
 *.log
 *.pid
+*.pdf
+*.txt
 
 # macOS
 .DS_Store
-
-# Local reference material not tracked in git
-/humanities-14-00193-v2.pdf
