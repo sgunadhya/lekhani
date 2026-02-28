@@ -1,6 +1,6 @@
 # Lekhani - Screenplay Writing Tool
 
-.PHONY: help run dev build launch clean kill fmt lint test check quick-test frontend-build frontend-serve
+.PHONY: help run dev build launch clean kill fmt lint test check quick-test frontend-build frontend-serve screenshots motion
 
 TAURI_DIR := src-tauri
 FRONTEND_DIR := frontend
@@ -26,6 +26,8 @@ help:
 	@echo "  $(GREEN)make launch$(NC)         - Rebuild and launch the macOS app bundle"
 	@echo "  $(GREEN)make frontend-build$(NC) - Build the Leptos frontend only"
 	@echo "  $(GREEN)make frontend-serve$(NC) - Serve the Leptos frontend only"
+	@echo "  $(GREEN)make screenshots$(NC)    - Capture README screenshots from the macOS app"
+	@echo "  $(GREEN)make motion$(NC)         - Capture README motion assets (mp4 + gif)"
 	@echo "  $(GREEN)make fmt$(NC)            - Format the Rust workspace"
 	@echo "  $(GREEN)make lint$(NC)           - Lint the Rust workspace"
 	@echo "  $(GREEN)make test$(NC)           - Run workspace tests"
@@ -94,5 +96,13 @@ frontend-build:
 frontend-serve: kill check
 	@echo "$(BLUE)Serving Leptos frontend on port $(TRUNK_PORT)...$(NC)"
 	@cd $(FRONTEND_DIR) && env NO_COLOR=true $(TRUNK) serve --port $(TRUNK_PORT) --open false
+
+screenshots: build
+	@echo "$(BLUE)Capturing README screenshots...$(NC)"
+	@./scripts/capture_readme_screenshots.sh
+
+motion: build
+	@echo "$(BLUE)Capturing README motion assets...$(NC)"
+	@./scripts/capture_readme_motion.sh
 
 .DEFAULT_GOAL := help

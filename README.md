@@ -4,6 +4,25 @@ Lekhani is a Tauri + Leptos desktop app for screenplay writing and narrative set
 
 It treats the screenplay as a document, stores projects in `.lekhani` files backed by SQLite, supports Fountain import/export, and builds a structured narrative/ontology model from natural-language input.
 
+## Screenshots
+
+### Narrative Mode
+
+![Narrative mode](docs/screenshots/narrative-mode.png)
+
+### Visual Inspector
+
+![Visual inspector](docs/screenshots/visual-inspector.png)
+
+## Motion Demos
+
+The repo can also generate short motion assets locally on macOS:
+
+- `docs/screenshots/narrative-demo.mp4`
+- `docs/screenshots/narrative-demo.gif`
+- `docs/screenshots/visual-demo.mp4`
+- `docs/screenshots/visual-demo.gif`
+
 ## Current Shape
 
 - `Narrative` mode:
@@ -65,7 +84,34 @@ Common commands:
 make dev
 make build
 make launch
+make screenshots
+make motion
 make quick-test
+```
+
+`make screenshots` is a local macOS helper that launches the bundled app and regenerates the README images in `docs/screenshots/`. It relies on AppleScript UI scripting and screen capture, so Terminal needs Accessibility permission.
+
+`make motion` records short window captures and emits both `mp4` and `gif` assets. It requires:
+
+- macOS
+- `ffmpeg`
+- Screen Recording permission for Terminal
+- Accessibility permission for Terminal
+
+If `ffmpeg` targets the wrong display, set `DISPLAY_INDEX` when running the script:
+
+```bash
+DISPLAY_INDEX=1 ./scripts/capture_readme_motion.sh
+```
+
+If the macOS accessibility tree does not expose the mode buttons by name, the capture scripts fall back to window-relative clicks. You can tune those offsets if needed:
+
+```bash
+NARRATIVE_TAB_X_OFFSET=390 \
+EDIT_TAB_X_OFFSET=465 \
+VISUAL_TAB_X_OFFSET=535 \
+MODE_TAB_Y_OFFSET=48 \
+./scripts/capture_readme_motion.sh
 ```
 
 ## Development Notes
