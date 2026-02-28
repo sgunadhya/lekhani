@@ -1,0 +1,143 @@
+mod core;
+
+use crate::core::db::Database;
+use crate::core::llm::LLMEngine;
+use leptos::*;
+use std::sync::Arc;
+use tauri::Manager;
+use tauri::State;
+
+struct AppState {
+    db: Arc<Database>,
+    llm: Arc<LLMEngine>,
+}
+
+#[cfg_attr(mobile, tauri::mobile_entry_point)]
+pub fn run() {
+    let _ = console_log::init_with_level(log::Level::Debug);
+    console_error_panic_hook::set_once();
+
+    tauri::Builder::default()
+        .setup(|app| {
+            #[cfg(debug_assertions)]
+            {
+                let _ = app.handle().plugin(
+                    tauri_plugin_log::Builder::default()
+                        .level(log::LevelFilter::Info)
+                        .build(),
+                );
+            }
+
+            // Initialize database (in-memory for now)
+            let db = match Database::open_in_memory() {
+                Ok(db) => db,
+                Err(e) => {
+                    log::error!("Failed to open database: {}", e);
+                    return Err(e.into());
+                }
+            };
+
+            let llm = match LLMEngine::new() {
+                Ok(llm) => llm,
+                Err(e) => {
+                    log::error!("Failed to initialize LLM engine: {}", e);
+                    return Err(e.into());
+                }
+            };
+
+            app.manage(AppState {
+                db: Arc::new(db),
+                llm: Arc::new(llm),
+            });
+
+            // For production: serve static files from embedded dist
+            // For development: we'll use external server (trunk serve)
+            Ok(())
+        })
+        .invoke_handler(tauri::generate_handler![
+            get_screenplays,
+            save_screenplay,
+            parse_character,
+            parse_event,
+            get_nudge,
+        ])
+        .run(tauri::generate_context!())
+        .expect("error while running tauri application");
+}
+
+#[tauri::command]
+fn get_screenplays(
+    state: State<AppState>,
+) -> Result<Vec<crate::core::screenplay::Screenplay>, String> {
+    state.db.list_screenplays().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn save_screenplay(
+    state: State<AppState>,
+    screenplay: crate::core::screenplay::Screenplay,
+) -> Result<(), String> {
+    state
+        .db
+        .save_screenplay(&screenplay)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn parse_character(
+    state: State<AppState>,
+    description: String,
+) -> Result<crate::core::golem::Character, String> {
+    state
+        .llm
+        .parse_character_description(&description)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn parse_event(
+    state: State<AppState>,
+    description: String,
+) -> Result<crate::core::golem::NarrativeEvent, String> {
+    state
+        .llm
+        .parse_event_description(&description)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn get_nudge(state: State<AppState>) -> Result<String, String> {
+    // Stub: generate a generic nudge
+    Ok("Consider adding more details about the characters.".to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::db::Database;
+    use crate::core::screenplay::Screenplay;
+    use chrono::Utc;
+    use uuid::Uuid;
+
+    #[test]
+    fn test_save_and_load_screenplay() {
+        let db = Database::open_in_memory().expect("failed to open db");
+        let screenplay = Screenplay {
+            id: Uuid::new_v4(),
+            title: "Test Screenplay".to_string(),
+            fountain_text: "INT. HOUSE - DAY\nJohn enters.".to_string(),
+            parsed: None,
+            version: 0,
+            changes: Vec::new(),
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        };
+        db.save_screenplay(&screenplay).expect("save failed");
+        let loaded = db
+            .load_screenplay(screenplay.id)
+            .expect("load failed")
+            .unwrap();
+        assert_eq!(loaded.title, screenplay.title);
+        assert_eq!(loaded.fountain_text, screenplay.fountain_text);
+    }
+}

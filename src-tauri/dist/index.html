@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Lekhani</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 40px;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            text-align: center;
+        }
+        h1 {
+            font-size: 48px;
+            margin-bottom: 20px;
+            text-shadow: 2px 2px 4px rgba(0,0,0,0.3);
+        }
+        p {
+            font-size: 20px;
+            margin-bottom: 30px;
+            max-width: 600px;
+            line-height: 1.6;
+        }
+        .status {
+            background: rgba(255,255,255,0.1);
+            padding: 20px;
+            border-radius: 10px;
+            margin: 20px 0;
+            font-family: monospace;
+        }
+        button {
+            background: white;
+            color: #667eea;
+            border: none;
+            padding: 12px 24px;
+            font-size: 16px;
+            border-radius: 8px;
+            cursor: pointer;
+            margin: 10px;
+            font-weight: 600;
+            transition: transform 0.2s;
+        }
+        button:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(0,0,0,0.2);
+        }
+        .log {
+            background: rgba(0,0,0,0.3);
+            padding: 15px;
+            border-radius: 8px;
+            margin-top: 20px;
+            max-width: 800px;
+            text-align: left;
+            font-family: monospace;
+            font-size: 14px;
+            max-height: 200px;
+            overflow-y: auto;
+            white-space: pre-wrap;
+        }
+    </style>
+</head>
+<body>
+    <h1>Lekhani</h1>
+    <p>Screenplay Writing Tool</p>
+    
+    <div class="status" id="status">
+        Testing Tauri connection...
+    </div>
+    
+    <div>
+        <button onclick="testTauri()">Test Tauri API</button>
+        <button onclick="getTime()">Get Server Time</button>
+        <button onclick="showAlert()">Show Native Dialog</button>
+    </div>
+    
+    <div class="log" id="log">
+        Log will appear here...
+    </div>
+    
+    <script>
+        function log(msg) {
+            const logDiv = document.getElementById('log');
+            const timestamp = new Date().toLocaleTimeString();
+            logDiv.innerHTML = `[${timestamp}] ${msg}\n` + logDiv.innerHTML;
+        }
+        
+        function updateStatus(msg, isError = false) {
+            const statusDiv = document.getElementById('status');
+            statusDiv.textContent = msg;
+            statusDiv.style.color = isError ? '#ff6b6b' : '#51cf66';
+        }
+        
+        function testTauri() {
+            log('Testing Tauri API...');
+            if (window.__TAURI__) {
+                updateStatus('✓ Tauri API available');
+                log('Tauri API is available');
+            } else {
+                updateStatus('✗ Tauri API not available', true);
+                log('Tauri API not found - running in browser?');
+            }
+        }
+        
+        async function getTime() {
+            if (!window.__TAURI__) {
+                log('Cannot get time: Tauri API not available');
+                return;
+            }
+            try {
+                const result = await window.__TAURI__.tauri.invoke('get_time');
+                log(`Server time: ${result}`);
+            } catch (error) {
+                log(`Error getting time: ${error}`);
+            }
+        }
+        
+        async function showAlert() {
+            if (!window.__TAURI__) {
+                log('Cannot show alert: Tauri API not available');
+                return;
+            }
+            try {
+                await window.__TAURI__.dialog.message('Hello from Tauri!', 'Native Dialog');
+                log('Dialog shown successfully');
+            } catch (error) {
+                log(`Error showing dialog: ${error}`);
+            }
+        }
+        
+        // Auto-test on load
+        window.addEventListener('DOMContentLoaded', () => {
+            log('Page loaded');
+            setTimeout(testTauri, 100);
+        });
+    </script>
+</body>
+</html>

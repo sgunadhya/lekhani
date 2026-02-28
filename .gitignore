@@ -1,0 +1,15 @@
+# Rust
+/target/
+
+# Trunk / frontend build output
+/dist/
+
+# Tauri bundle output
+/src-tauri/target/
+
+# Local runtime artifacts
+*.log
+*.pid
+
+# macOS
+.DS_Store

@@ -1,0 +1,11 @@
+[build]
+target = "index.html"
+dist = "dist"
+crate = "frontend"
+
+[[build.watch]]
+path = "frontend/src"
+target = "index.html"
+
+[serve]
+port = 3000

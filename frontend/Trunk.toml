@@ -1,0 +1,8 @@
+[build]
+target = "index.html"
+dist = "../dist"
+public_url = "."
+
+[[build.watch]]
+path = "src"
+target = "index.html"
