@@ -10,7 +10,8 @@ use adapters::db::{
 use adapters::llm::FmRsNarrativeEngine;
 use adapters::llm::StubNarrativeEngine;
 use application::{
-    HeuristicAssistantCapabilityPlanner, HeuristicAssistantIntentClassifier, HeuristicMutationGate,
+    HeuristicAssistantCapabilityPlanner, HeuristicAssistantFallbackResponder,
+    HeuristicAssistantIntentClassifier, HeuristicMutationGate,
 };
 use adapters::tauri::{
     commit_narrative_input, export_fountain_document, get_active_screenplay,
@@ -102,10 +103,12 @@ pub fn run() {
                 llm_detail,
                 Box::new(HeuristicAssistantIntentClassifier),
                 Box::new(HeuristicAssistantCapabilityPlanner),
+                Box::new(HeuristicAssistantFallbackResponder),
                 Box::new(HeuristicMutationGate),
                 narrative_character_parser(),
                 narrative_event_parser(),
                 narrative_nudge_generator(),
+                narrative_assistant_agent(),
             ));
 
             if let Some(project_path) = startup_project_path() {
@@ -289,6 +292,15 @@ fn narrative_event_parser() -> Box<dyn ports::EventParser> {
 }
 
 fn narrative_nudge_generator() -> Box<dyn ports::NudgeGenerator> {
+    #[cfg(target_os = "macos")]
+    if let Ok(engine) = FmRsNarrativeEngine::new() {
+        return Box::new(engine);
+    }
+
+    Box::<StubNarrativeEngine>::default()
+}
+
+fn narrative_assistant_agent() -> Box<dyn ports::AssistantAgent> {
     #[cfg(target_os = "macos")]
     if let Ok(engine) = FmRsNarrativeEngine::new() {
         return Box::new(engine);

@@ -8,7 +8,8 @@ pub mod sync;
 
 pub use assistant_memory::{
     ActiveAssumption, AssistantCapability, AssistantIntent, FocusItem, FocusKind, OpenQuestion,
-    PinnedDecision, RecentCorrection, ToolActionRecord, WorkingMemory, WritePolicy,
+    PinnedDecision, RecentCorrection, StoryTask, TaskCategory, TaskStatus, ToolActionRecord,
+    WorkingMemory, WritePolicy,
 };
 pub use error::AppError;
 pub use narrative::{

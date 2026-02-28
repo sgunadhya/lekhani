@@ -255,7 +255,7 @@ pub async fn submit_narrative_turn(
     app: AppHandle,
     request: CommitNarrativeInputRequest,
 ) -> Result<NarrativeTurnDto, String> {
-    tauri::async_runtime::spawn_blocking(move || {
+    tauri::async_runtime::spawn_blocking(move || -> Result<NarrativeTurnDto, String> {
         let state = app.state::<AppState>();
         submit_turn(&state, &request.prompt).map(|turn| NarrativeTurnDto {
             reply_title: turn.reply_title,
@@ -264,7 +264,7 @@ pub async fn submit_narrative_turn(
         })
     })
     .await
-    .map_err(|err| format!("failed to join narrative turn task: {err}"))?
+    .unwrap_or_else(|err| Err(format!("failed to join narrative turn task: {err}")))
 }
 
 #[tauri::command]
@@ -272,7 +272,7 @@ pub async fn submit_assistant_turn(
     app: AppHandle,
     request: CommitNarrativeInputRequest,
 ) -> Result<AssistantTurnDto, String> {
-    tauri::async_runtime::spawn_blocking(move || {
+    tauri::async_runtime::spawn_blocking(move || -> Result<AssistantTurnDto, String> {
         let state = app.state::<AppState>();
         submit_turn(&state, &request.prompt).map(|turn| AssistantTurnDto {
             intent: turn.intent,
@@ -285,7 +285,7 @@ pub async fn submit_assistant_turn(
         })
     })
     .await
-    .map_err(|err| format!("failed to join assistant turn task: {err}"))?
+    .unwrap_or_else(|err| Err(format!("failed to join assistant turn task: {err}")))
 }
 
 fn preview_narrative_input_inner(

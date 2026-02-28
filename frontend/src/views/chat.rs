@@ -1,6 +1,6 @@
 use crate::api::dto::{
     AssistantIntentDto, NarrativeChangeKindDto, NarrativeCommitTargetDto, PreviewNarrativeInputDto,
-    WorkingMemoryDto,
+    TaskStatusDto, WorkingMemoryDto,
 };
 use crate::state::document::DocumentContext;
 use crate::state::narrative::{
@@ -158,11 +158,21 @@ pub fn ChatInterface() -> impl IntoView {
                                     {message.title.as_ref().map(|title| {
                                         view! { <span class="chat-message-title">{title.clone()}</span> }
                                     })}
-                                    <p>{message.body}</p>
+                                    <div class="chat-message-body">{render_markdown(&message.body)}</div>
                                 </article>
                             }
                         })
                         .collect_view()
+                }}
+                {move || if turn_action.pending().get() {
+                    view! {
+                        <div class="chat-message chat-message-assistant processing-indicator">
+                            <span class="chat-message-title">"Lekhani is thinking..."</span>
+                            <div class="dot-flashing"></div>
+                        </div>
+                    }.into_view()
+                } else {
+                    view! { <div></div> }.into_view()
                 }}
             </div>
 
@@ -233,21 +243,62 @@ fn render_working_memory(memory: &WorkingMemoryDto) -> String {
         lines.push(format!("Focus: {}", focus.summary));
     }
 
+    let open_tasks = memory
+        .story_backlog
+        .iter()
+        .filter(|t| matches!(t.status, TaskStatusDto::Open))
+        .collect::<Vec<_>>();
+
+    if let Some(task) = open_tasks.first() {
+        if open_tasks.len() > 1 {
+            lines.push(format!("Goal: {} (+{} more)", task.description, open_tasks.len() - 1));
+        } else {
+            lines.push(format!("Goal: {}", task.description));
+        }
+    }
+
     if let Some(question) = memory.open_questions.first() {
-        lines.push(format!("Open question: {}", question.question));
+        lines.push(format!("Question: {}", question.question));
     }
 
     if let Some(decision) = memory.pinned_decisions.first() {
         lines.push(format!("Pinned: {}", decision.summary));
     }
 
-    if let Some(action) = memory.last_tool_actions.first() {
-        lines.push(format!("Last action: {}", action.summary));
-    }
-
     if lines.is_empty() {
         "No active context yet.".to_string()
     } else {
-        lines.join(" ")
+        lines.join(" · ")
     }
+}
+
+fn render_markdown(text: &str) -> impl IntoView {
+    let mut result = String::new();
+    let mut is_bold = false;
+    let chars: Vec<char> = text.chars().collect();
+    let mut i = 0;
+
+    while i < chars.len() {
+        if i + 1 < chars.len() && chars[i] == '*' && chars[i + 1] == '*' {
+            if is_bold {
+                result.push_str("</strong>");
+            } else {
+                result.push_str("<strong>");
+            }
+            is_bold = !is_bold;
+            i += 2;
+        } else if chars[i] == '\n' {
+            result.push_str("<br/>");
+            i += 1;
+        } else {
+            result.push(chars[i]);
+            i += 1;
+        }
+    }
+
+    if is_bold {
+        result.push_str("</strong>");
+    }
+
+    view! { <div inner_html=result></div> }
 }

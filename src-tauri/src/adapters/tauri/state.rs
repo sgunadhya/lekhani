@@ -1,11 +1,15 @@
 use crate::adapters::db::SqliteScreenplayRepository;
 use crate::application::{
-    AssistantCapabilityPlanner, AssistantIntentClassifier, MutationGate, NarrativeService,
-    ScreenplayService,
+    AssistantCapabilityPlanner, AssistantFallbackResponder, AssistantIntentClassifier,
+    MutationGate, NarrativeService, ScreenplayService,
 };
-use crate::domain::{NarrativeCharacter, NarrativeEvent, NarrativeSnapshot, OntologyRelationship};
+use crate::domain::{
+    AppError, NarrativeCharacter, NarrativeEvent, NarrativeSnapshot, OntologyRelationship,
+    WorkingMemory,
+};
 use crate::ports::{
-    CharacterParser, EventParser, NarrativeRepository, NudgeGenerator, ScreenplayRepository,
+    AssistantAgent, CharacterParser, EventParser, NarrativeRepository, NudgeGenerator,
+    ScreenplayRepository, WorkingMemoryRepository,
 };
 use std::path::Path;
 use std::sync::Arc;
@@ -17,8 +21,10 @@ pub struct AppState {
         Box<dyn EventParser>,
         Box<dyn NudgeGenerator>,
     >,
+    pub assistant_agent: Box<dyn AssistantAgent>,
     pub assistant_intent_classifier: Box<dyn AssistantIntentClassifier>,
     pub assistant_capability_planner: Box<dyn AssistantCapabilityPlanner>,
+    pub assistant_fallback_responder: Box<dyn AssistantFallbackResponder>,
     pub mutation_gate: Box<dyn MutationGate>,
     pub narrative_repository: Box<dyn NarrativeRepository>,
     pub sqlite_repository: Option<Arc<SqliteScreenplayRepository>>,
@@ -35,10 +41,12 @@ impl AppState {
         llm_detail: String,
         assistant_intent_classifier: Box<dyn AssistantIntentClassifier>,
         assistant_capability_planner: Box<dyn AssistantCapabilityPlanner>,
+        assistant_fallback_responder: Box<dyn AssistantFallbackResponder>,
         mutation_gate: Box<dyn MutationGate>,
         character_parser: Box<dyn CharacterParser>,
         event_parser: Box<dyn EventParser>,
         nudge_generator: Box<dyn NudgeGenerator>,
+        assistant_agent: Box<dyn AssistantAgent>,
     ) -> Self {
         Self {
             screenplay_service: ScreenplayService::new(screenplay_repository),
@@ -47,8 +55,10 @@ impl AppState {
                 event_parser,
                 nudge_generator,
             ),
+            assistant_agent,
             assistant_intent_classifier,
             assistant_capability_planner,
+            assistant_fallback_responder,
             mutation_gate,
             narrative_repository,
             sqlite_repository,
@@ -71,6 +81,16 @@ impl AppState {
             .save_event(event)
             .map(|_| ())
             .map_err(|err| err.to_string())
+    }
+
+    pub fn get_working_memory(&self) -> Result<WorkingMemory, String> {
+        let Some(repository) = self.sqlite_repository.as_ref() else {
+            return Ok(WorkingMemory::default());
+        };
+
+        repository
+            .load_working_memory("current-project", "main")
+            .map_err(|err: AppError| err.to_string())
     }
 
     pub fn get_snapshot(&self) -> Result<NarrativeSnapshot, String> {

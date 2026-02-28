@@ -1,4 +1,7 @@
-use crate::domain::{AssistantCapability, AssistantIntent, NarrativeMessagePreview, WritePolicy};
+use crate::domain::{
+    AssistantCapability, AssistantIntent, NarrativeMessagePreview, WorkingMemory, WritePolicy,
+};
+use crate::ports::AssistantResponse;
 
 pub struct AssistantIntentContext<'a> {
     pub prompt: &'a str,
@@ -30,9 +33,20 @@ pub trait AssistantCapabilityPlanner: Send + Sync {
     fn plan(&self, context: CapabilityPlanningContext<'_>) -> CapabilityPlan;
 }
 
+pub trait AssistantFallbackResponder: Send + Sync {
+    fn respond(
+        &self,
+        prompt: &str,
+        preview: &NarrativeMessagePreview,
+        memory: &WorkingMemory,
+        plan: &CapabilityPlan,
+    ) -> AssistantResponse;
+}
+
 pub struct HeuristicAssistantIntentClassifier;
 pub struct HeuristicMutationGate;
 pub struct HeuristicAssistantCapabilityPlanner;
+pub struct HeuristicAssistantFallbackResponder;
 
 impl AssistantIntentClassifier for HeuristicAssistantIntentClassifier {
     fn classify(&self, context: AssistantIntentContext<'_>) -> AssistantIntent {
@@ -155,6 +169,75 @@ impl AssistantCapabilityPlanner for HeuristicAssistantCapabilityPlanner {
                     write_policy: WritePolicy::CandidateOnly,
                 }
             }
+        }
+    }
+}
+
+impl AssistantFallbackResponder for HeuristicAssistantFallbackResponder {
+    fn respond(
+        &self,
+        prompt: &str,
+        preview: &NarrativeMessagePreview,
+        memory: &WorkingMemory,
+        plan: &CapabilityPlan,
+    ) -> AssistantResponse {
+        let title = match plan.intent {
+            AssistantIntent::Query => "Story Notes",
+            AssistantIntent::Clarify => "Need One Anchor",
+            AssistantIntent::MutateDocument => "Draft Suggestion",
+            AssistantIntent::ProposeSync => "Alignment Note",
+            AssistantIntent::ResolveLint => "Structure Check",
+            _ => "Story Direction",
+        }
+        .to_string();
+
+        let body = if let Some(reply_body) = preview.reply_body.as_ref().filter(|value| !value.trim().is_empty()) {
+            reply_body.clone()
+        } else if !preview.changes.is_empty() {
+            let focus = preview
+                .changes
+                .iter()
+                .take(2)
+                .map(|change| format!("{}: {}", change.label, change.detail))
+                .collect::<Vec<_>>()
+                .join("\n");
+
+            match plan.write_policy {
+                WritePolicy::CandidateOnly => format!(
+                    "I found a plausible story move, but I kept it as a proposal for now.\n{}",
+                    focus
+                ),
+                WritePolicy::NoWrite => format!(
+                    "I can work with this, but I need a bit more grounding before I treat it as story structure.\n{}",
+                    focus
+                ),
+                WritePolicy::SafeCommit => format!(
+                    "This looks grounded enough to shape the story model.\n{}",
+                    focus
+                ),
+            }
+        } else if let Some(question) = memory.open_questions.first() {
+            format!(
+                "I'm tracking this as the most useful next question:\n{}",
+                question.question
+            )
+        } else if let Some(focus) = memory.current_focus.as_ref() {
+            format!(
+                "We're currently focused on {}. Give me one concrete detail to build from.",
+                focus.summary
+            )
+        } else {
+            let trimmed = prompt.trim();
+            format!(
+                "I can help shape this. Give me one concrete character, event, relationship, or setting detail to build from.\nCurrent note: {}",
+                trimmed
+            )
+        };
+
+        AssistantResponse::FinalReply {
+            intent: plan.intent.clone(),
+            title,
+            body,
         }
     }
 }

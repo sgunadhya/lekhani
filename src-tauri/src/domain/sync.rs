@@ -41,6 +41,8 @@ pub enum SyncTargetKind {
     Character,
     Event,
     Relationship,
+    Setting,
+    WorldContext,
     ScreenplayPatch,
     DocumentMetadata,
     Link,

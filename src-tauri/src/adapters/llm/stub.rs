@@ -1,11 +1,39 @@
 use std::collections::BTreeSet;
 
-use crate::domain::{NarrativeCharacter, NarrativeEvent, NarrativeNudge, NarrativeSnapshot};
-use crate::ports::{CharacterParser, EventParser, NudgeGenerator};
+use crate::adapters::mcp::{McpToolCall, McpToolResult};
+use crate::domain::{
+    AssistantIntent, NarrativeCharacter, NarrativeEvent, NarrativeNudge, NarrativeSnapshot,
+    WorkingMemory,
+};
+use crate::ports::{AssistantAgent, AssistantResponse, CharacterParser, EventParser, NudgeGenerator};
 use uuid::Uuid;
 
 #[derive(Default)]
 pub struct StubNarrativeEngine;
+
+impl AssistantAgent for StubNarrativeEngine {
+    fn process_turn(
+        &self,
+        _prompt: &str,
+        _memory: &WorkingMemory,
+        _observations: &[(McpToolCall, McpToolResult)],
+    ) -> Result<AssistantResponse, String> {
+        // The stub doesn't actually use tools, it just replies.
+        Ok(AssistantResponse::FinalReply {
+            intent: AssistantIntent::Guide,
+            title: "Stub Response".to_string(),
+            body: "I am currently in stub mode. I can't reason about tools yet, but I'm ready to be upgraded to a full Agent Loop.".to_string(),
+        })
+    }
+
+    fn generate_nudge(
+        &self,
+        snapshot: &NarrativeSnapshot,
+        _memory: &WorkingMemory,
+    ) -> Result<NarrativeNudge, String> {
+        NudgeGenerator::generate_nudge(self, snapshot)
+    }
+}
 
 impl CharacterParser for StubNarrativeEngine {
     fn parse_character(
@@ -55,20 +83,18 @@ impl EventParser for StubNarrativeEngine {
 
 impl NudgeGenerator for StubNarrativeEngine {
     fn generate_nudge(&self, snapshot: &NarrativeSnapshot) -> Result<NarrativeNudge, String> {
+        // In a real agent loop, the agent would analyze the snapshot and backlog.
+        // For the stub, we look for obvious gaps first.
         let message = if snapshot.characters.is_empty() {
-            "Define the protagonist in one sentence with a clear desire and pressure.".to_string()
+            "Start by introducing your protagonist. What is their core desire?".to_string()
         } else if snapshot.events.is_empty() {
-            "Describe the first event that forces the protagonist to act.".to_string()
-        } else if snapshot
-            .events
-            .iter()
-            .all(|event| event.participants.is_empty())
-        {
-            "Link at least one tracked character to a narrative event so the model can reason about scene participation.".to_string()
+            "Describe an initial event that challenges your protagonist's world.".to_string()
         } else if snapshot.characters.len() == 1 {
-            "Add a counter-force or ally so the story model has a relationship to reason about.".to_string()
+            "Every hero needs a counter-force. Who opposes or challenges them?".to_string()
+        } else if snapshot.events.iter().all(|event| event.participants.is_empty()) {
+            "Which characters are present in your key events? Linking them helps the model reason.".to_string()
         } else {
-            "Clarify the turning point that changes the protagonist's options in the next sequence.".to_string()
+            "What's the next logical step in the story? A new character, a turning point, or a relationship shift?".to_string()
         };
 
         Ok(NarrativeNudge { message })

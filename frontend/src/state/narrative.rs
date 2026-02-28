@@ -84,6 +84,8 @@ pub fn create_preview_resource(
                 event: None,
                 relationships: Vec::new(),
                 changes: Vec::new(),
+                reply_title: None,
+                reply_body: None,
             })
         } else {
             tauri::preview_narrative_input(prompt).await

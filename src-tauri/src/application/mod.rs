@@ -4,8 +4,9 @@ pub mod screenplay_service;
 pub mod sync_coordinator;
 
 pub use assistant_turn::{
-    AssistantCapabilityPlanner, AssistantIntentClassifier, AssistantIntentContext,
-    CapabilityPlan, CapabilityPlanningContext, HeuristicAssistantCapabilityPlanner,
+    AssistantCapabilityPlanner, AssistantFallbackResponder, AssistantIntentClassifier,
+    AssistantIntentContext, CapabilityPlan, CapabilityPlanningContext,
+    HeuristicAssistantCapabilityPlanner, HeuristicAssistantFallbackResponder,
     HeuristicAssistantIntentClassifier, HeuristicMutationGate, MutationGate,
 };
 pub use narrative_service::NarrativeService;

@@ -4,8 +4,8 @@ use uuid::Uuid;
 use crate::adapters::db::SqliteScreenplayRepository;
 use crate::adapters::tauri::state::AppState;
 use crate::domain::{
-    CandidateStatus, ProvenanceRecord, SyncCandidate, SyncRun, SyncRunStatus, SyncSourceKind,
-    SyncTargetLayer,
+    AppError, CandidateStatus, ProvenanceRecord, SyncCandidate, SyncRun, SyncRunStatus,
+    SyncSourceKind, SyncTargetLayer,
 };
 use crate::ports::{CandidateRepository, ProvenanceRepository, SyncRunRepository};
 
@@ -39,7 +39,7 @@ pub fn execute(state: &AppState, call: McpToolCall) -> Result<McpToolResult, Str
                 Some(repository) => repository
                     .create_run(run)
                     .map(McpToolResult::SyncRun)
-                    .map_err(|err| err.to_string()),
+                    .map_err(|err: AppError| err.to_string()),
                 None => Ok(McpToolResult::SyncRun(run)),
             }
         }
@@ -76,7 +76,7 @@ pub fn execute(state: &AppState, call: McpToolCall) -> Result<McpToolResult, Str
                     created_at: Utc::now(),
                     resolved_at: Some(Utc::now()),
                 })
-                .map_err(|err| err.to_string())?;
+                .map_err(|err: AppError| err.to_string())?;
 
             if let Some(derived_ref) = derived_ref {
                 repository
@@ -91,7 +91,7 @@ pub fn execute(state: &AppState, call: McpToolCall) -> Result<McpToolResult, Str
                         notes: Some(summary),
                         created_at: Utc::now(),
                     })
-                    .map_err(|err| err.to_string())?;
+                    .map_err(|err: AppError| err.to_string())?;
             }
 
             Ok(McpToolResult::Empty)
@@ -106,7 +106,7 @@ pub fn execute(state: &AppState, call: McpToolCall) -> Result<McpToolResult, Str
             repository
                 .update_run(sync_run)
                 .map(|_| McpToolResult::Empty)
-                .map_err(|err| err.to_string())
+                .map_err(|err: AppError| err.to_string())
         }
         _ => Err("unsupported sync MCP tool call".to_string()),
     }
@@ -124,13 +124,13 @@ pub fn get_debug_state(state: &AppState) -> Result<SyncDebugState, String> {
     Ok(SyncDebugState {
         runs: repository
             .list_recent_sync_runs(10)
-            .map_err(|err| err.to_string())?,
+            .map_err(|err: AppError| err.to_string())?,
         pending_candidates: repository
             .list_pending_candidates()
-            .map_err(|err| err.to_string())?,
+            .map_err(|err: AppError| err.to_string())?,
         recent_provenance: repository
             .list_recent_provenance(25)
-            .map_err(|err| err.to_string())?,
+            .map_err(|err: AppError| err.to_string())?,
     })
 }
 
@@ -146,5 +146,5 @@ pub fn list_recent_sync_runs(
 ) -> Result<Vec<SyncRun>, String> {
     repository
         .list_recent_sync_runs(limit)
-        .map_err(|err| err.to_string())
+        .map_err(|err: AppError| err.to_string())
 }

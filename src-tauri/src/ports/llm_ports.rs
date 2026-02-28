@@ -1,4 +1,57 @@
-use crate::domain::{NarrativeCharacter, NarrativeEvent, NarrativeNudge, NarrativeSnapshot};
+use crate::adapters::mcp::{McpToolCall, McpToolResult};
+use crate::domain::{
+    AssistantIntent, NarrativeCharacter, NarrativeEvent, NarrativeNudge, NarrativeSnapshot,
+    WorkingMemory,
+};
+
+#[derive(Debug, Clone)]
+pub struct AssistantToolCall {
+    pub call: McpToolCall,
+    pub thought: String,
+}
+
+pub enum AssistantResponse {
+    ToolCalls(Vec<AssistantToolCall>),
+    FinalReply {
+        intent: AssistantIntent,
+        title: String,
+        body: String,
+    },
+}
+
+pub trait AssistantAgent: Send + Sync {
+    fn process_turn(
+        &self,
+        prompt: &str,
+        memory: &WorkingMemory,
+        observations: &[(McpToolCall, McpToolResult)],
+    ) -> Result<AssistantResponse, String>;
+
+    fn generate_nudge(
+        &self,
+        snapshot: &NarrativeSnapshot,
+        memory: &WorkingMemory,
+    ) -> Result<NarrativeNudge, String>;
+}
+
+impl<T: AssistantAgent + ?Sized> AssistantAgent for Box<T> {
+    fn process_turn(
+        &self,
+        prompt: &str,
+        memory: &WorkingMemory,
+        observations: &[(McpToolCall, McpToolResult)],
+    ) -> Result<AssistantResponse, String> {
+        (**self).process_turn(prompt, memory, observations)
+    }
+
+    fn generate_nudge(
+        &self,
+        snapshot: &NarrativeSnapshot,
+        memory: &WorkingMemory,
+    ) -> Result<NarrativeNudge, String> {
+        (**self).generate_nudge(snapshot, memory)
+    }
+}
 
 pub trait CharacterParser: Send + Sync {
     fn parse_character(

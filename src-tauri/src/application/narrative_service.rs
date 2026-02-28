@@ -61,6 +61,8 @@ where
                 event: None,
                 relationships: Vec::new(),
                 changes: Vec::new(),
+                reply_title: None,
+                reply_body: None,
             });
         }
 
@@ -92,6 +94,8 @@ where
             event,
             relationships,
             changes,
+            reply_title: None,
+            reply_body: None,
         })
     }
 }

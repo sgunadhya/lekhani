@@ -86,6 +86,8 @@ pub struct PreviewNarrativeInputDto {
     pub event: Option<NarrativeEventDto>,
     pub relationships: Vec<OntologyRelationshipDto>,
     pub changes: Vec<NarrativeChangeSummaryDto>,
+    pub reply_title: Option<String>,
+    pub reply_body: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -173,6 +175,37 @@ pub struct RecentCorrectionDto {
     pub corrected_ref: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub enum TaskStatusDto {
+    Open,
+    InProgress,
+    Resolved,
+    Blocked,
+    Dismissed,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub enum TaskCategoryDto {
+    Structure,
+    Character,
+    Event,
+    Relationship,
+    Alignment,
+    Lint,
+    Drafting,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StoryTaskDto {
+    pub id: String,
+    pub description: String,
+    pub priority: u8,
+    pub status: TaskStatusDto,
+    pub category: TaskCategoryDto,
+    pub related_refs: Vec<String>,
+    pub created_at: DateTime<Utc>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolActionRecordDto {
     pub tool_name: String,
@@ -185,6 +218,7 @@ pub struct WorkingMemoryDto {
     pub project_id: String,
     pub session_id: String,
     pub current_focus: Option<FocusItemDto>,
+    pub story_backlog: Vec<StoryTaskDto>,
     pub open_questions: Vec<OpenQuestionDto>,
     pub pinned_decisions: Vec<PinnedDecisionDto>,
     pub active_assumptions: Vec<ActiveAssumptionDto>,

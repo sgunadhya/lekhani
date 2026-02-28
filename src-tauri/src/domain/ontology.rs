@@ -5,6 +5,8 @@ use uuid::Uuid;
 pub enum OntologyEntityKind {
     Character,
     Event,
+    Setting,
+    WorldContext,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

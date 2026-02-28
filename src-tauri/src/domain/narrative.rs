@@ -52,6 +52,8 @@ pub struct NarrativeMessagePreview {
     pub event: Option<NarrativeEvent>,
     pub relationships: Vec<OntologyRelationship>,
     pub changes: Vec<NarrativeChangeSummary>,
+    pub reply_title: Option<String>,
+    pub reply_body: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

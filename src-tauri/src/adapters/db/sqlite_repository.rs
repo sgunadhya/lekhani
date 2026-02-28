@@ -24,7 +24,7 @@ pub struct SqliteScreenplayRepository {
     path: Mutex<PathBuf>,
 }
 
-const MIGRATIONS: [(&str, &str); 4] = [
+const MIGRATIONS: [(&str, &str); 5] = [
     (
         "0001_init.sql",
         include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/migrations/0001_init.sql")),
@@ -48,6 +48,13 @@ const MIGRATIONS: [(&str, &str); 4] = [
         include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/migrations/0004_assistant_memory.sql"
+        )),
+    ),
+    (
+        "0005_story_backlog.sql",
+        include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/migrations/0005_story_backlog.sql"
         )),
     ),
 ];
@@ -776,6 +783,12 @@ impl NarrativeRepository for SqliteScreenplayRepository {
         Ok(event)
     }
 
+    fn save_entity(&self, entity: OntologyEntity) -> Result<OntologyEntity, AppError> {
+        let connection = self.connection()?;
+        Self::upsert_ontology_entity(&connection, &entity)?;
+        Ok(entity)
+    }
+
     fn save_relationship(
         &self,
         relationship: OntologyRelationship,
@@ -1316,7 +1329,7 @@ impl WorkingMemoryRepository for SqliteScreenplayRepository {
         let connection = self.connection()?;
         connection
             .query_row(
-                "SELECT current_focus_json, open_questions_json, pinned_decisions_json, active_assumptions_json, recent_corrections_json, last_tool_actions_json, updated_at
+                "SELECT current_focus_json, open_questions_json, pinned_decisions_json, active_assumptions_json, recent_corrections_json, last_tool_actions_json, updated_at, story_backlog_json
                  FROM assistant_working_memory
                  WHERE project_id = ?1 AND session_id = ?2",
                 params![project_id, session_id],
@@ -1328,6 +1341,7 @@ impl WorkingMemoryRepository for SqliteScreenplayRepository {
                     let recent_corrections_json: String = row.get(4)?;
                     let last_tool_actions_json: String = row.get(5)?;
                     let updated_at: String = row.get(6)?;
+                    let story_backlog_json: String = row.get(7)?;
 
                     Ok(WorkingMemory {
                         project_id: project_id.to_string(),
@@ -1343,6 +1357,7 @@ impl WorkingMemoryRepository for SqliteScreenplayRepository {
                             .unwrap_or_default(),
                         last_tool_actions: serde_json::from_str(&last_tool_actions_json)
                             .unwrap_or_default(),
+                        story_backlog: serde_json::from_str(&story_backlog_json).unwrap_or_default(),
                         updated_at: parse_datetime_or_now(&updated_at),
                     })
                 },
@@ -1379,12 +1394,14 @@ impl WorkingMemoryRepository for SqliteScreenplayRepository {
             .map_err(|_| AppError::StatePoisoned("failed to serialize recent corrections"))?;
         let last_tool_actions_json = serde_json::to_string(&memory.last_tool_actions)
             .map_err(|_| AppError::StatePoisoned("failed to serialize tool actions"))?;
+        let story_backlog_json = serde_json::to_string(&memory.story_backlog)
+            .map_err(|_| AppError::StatePoisoned("failed to serialize story backlog"))?;
 
         connection
             .execute(
                 "INSERT INTO assistant_working_memory
-                    (project_id, session_id, current_focus_json, open_questions_json, pinned_decisions_json, active_assumptions_json, recent_corrections_json, last_tool_actions_json, updated_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+                    (project_id, session_id, current_focus_json, open_questions_json, pinned_decisions_json, active_assumptions_json, recent_corrections_json, last_tool_actions_json, updated_at, story_backlog_json)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
                  ON CONFLICT(project_id, session_id) DO UPDATE SET
                     current_focus_json = excluded.current_focus_json,
                     open_questions_json = excluded.open_questions_json,
@@ -1392,7 +1409,8 @@ impl WorkingMemoryRepository for SqliteScreenplayRepository {
                     active_assumptions_json = excluded.active_assumptions_json,
                     recent_corrections_json = excluded.recent_corrections_json,
                     last_tool_actions_json = excluded.last_tool_actions_json,
-                    updated_at = excluded.updated_at",
+                    updated_at = excluded.updated_at,
+                    story_backlog_json = excluded.story_backlog_json",
                 params![
                     memory.project_id,
                     memory.session_id,
@@ -1403,6 +1421,7 @@ impl WorkingMemoryRepository for SqliteScreenplayRepository {
                     recent_corrections_json,
                     last_tool_actions_json,
                     memory.updated_at.to_rfc3339(),
+                    story_backlog_json,
                 ],
             )
             .map_err(|_| AppError::StatePoisoned("failed to save assistant working memory"))?;
@@ -1447,12 +1466,16 @@ fn ontology_entity_kind_to_str(kind: &OntologyEntityKind) -> &'static str {
     match kind {
         OntologyEntityKind::Character => "character",
         OntologyEntityKind::Event => "event",
+        OntologyEntityKind::Setting => "setting",
+        OntologyEntityKind::WorldContext => "world_context",
     }
 }
 
 fn ontology_entity_kind_from_str(value: &str) -> OntologyEntityKind {
     match value {
         "event" => OntologyEntityKind::Event,
+        "setting" => OntologyEntityKind::Setting,
+        "world_context" => OntologyEntityKind::WorldContext,
         _ => OntologyEntityKind::Character,
     }
 }
@@ -1550,6 +1573,8 @@ fn sync_target_kind_to_str(value: &SyncTargetKind) -> &'static str {
         SyncTargetKind::Character => "character",
         SyncTargetKind::Event => "event",
         SyncTargetKind::Relationship => "relationship",
+        SyncTargetKind::Setting => "setting",
+        SyncTargetKind::WorldContext => "world_context",
         SyncTargetKind::ScreenplayPatch => "screenplay_patch",
         SyncTargetKind::DocumentMetadata => "document_metadata",
         SyncTargetKind::Link => "link",
@@ -1561,6 +1586,8 @@ fn sync_target_kind_from_str(value: &str) -> SyncTargetKind {
     match value {
         "event" => SyncTargetKind::Event,
         "relationship" => SyncTargetKind::Relationship,
+        "setting" => SyncTargetKind::Setting,
+        "world_context" => SyncTargetKind::WorldContext,
         "screenplay_patch" => SyncTargetKind::ScreenplayPatch,
         "document_metadata" => SyncTargetKind::DocumentMetadata,
         "link" => SyncTargetKind::Link,

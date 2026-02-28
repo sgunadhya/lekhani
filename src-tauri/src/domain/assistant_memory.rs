@@ -88,11 +88,43 @@ pub struct ToolActionRecord {
     pub related_refs: Vec<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub enum TaskStatus {
+    Open,
+    InProgress,
+    Resolved,
+    Blocked,
+    Dismissed,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub enum TaskCategory {
+    Structure,
+    Character,
+    Event,
+    Relationship,
+    Alignment,
+    Lint,
+    Drafting,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StoryTask {
+    pub id: String,
+    pub description: String,
+    pub priority: u8, // 1: High, 5: Low
+    pub status: TaskStatus,
+    pub category: TaskCategory,
+    pub related_refs: Vec<String>,
+    pub created_at: DateTime<Utc>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkingMemory {
     pub project_id: String,
     pub session_id: String,
     pub current_focus: Option<FocusItem>,
+    pub story_backlog: Vec<StoryTask>,
     pub open_questions: Vec<OpenQuestion>,
     pub pinned_decisions: Vec<PinnedDecision>,
     pub active_assumptions: Vec<ActiveAssumption>,
@@ -107,6 +139,7 @@ impl Default for WorkingMemory {
             project_id: "current-project".to_string(),
             session_id: "main".to_string(),
             current_focus: None,
+            story_backlog: Vec::new(),
             open_questions: Vec::new(),
             pinned_decisions: Vec::new(),
             active_assumptions: Vec::new(),

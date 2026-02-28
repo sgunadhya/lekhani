@@ -6,12 +6,231 @@ use serde_json::json;
 use uuid::Uuid;
 
 use super::StubNarrativeEngine;
-use crate::domain::{NarrativeCharacter, NarrativeEvent, NarrativeNudge, NarrativeSnapshot};
-use crate::ports::{CharacterParser, EventParser, NudgeGenerator};
+use crate::adapters::mcp::{McpToolCall, McpToolResult};
+use crate::domain::{
+    AssistantIntent, NarrativeCharacter, NarrativeEvent, NarrativeNudge, NarrativeSnapshot,
+    OntologyEntity, OntologyRelationship, StoryTask, WorkingMemory,
+};
+use crate::ports::{
+    AssistantAgent, AssistantResponse, AssistantToolCall, CharacterParser, EventParser,
+    NudgeGenerator,
+};
 
 #[derive(Clone)]
 pub struct FmRsNarrativeEngine {
     model: Arc<SystemLanguageModel>,
+}
+
+impl AssistantAgent for FmRsNarrativeEngine {
+    fn process_turn(
+        &self,
+        prompt: &str,
+        memory: &WorkingMemory,
+        observations: &[(McpToolCall, McpToolResult)],
+    ) -> Result<AssistantResponse, String> {
+        let session = Session::with_instructions(&self.model, AGENT_SYSTEM_PROMPT)
+            .map_err(|err| err.to_string())?;
+
+        let agent_prompt = build_agent_turn_prompt(prompt, memory, observations);
+        
+        let response = session
+            .respond(&agent_prompt, &Self::options())
+            .map_err(|err| err.to_string())?;
+
+        // Parse the response to see if it's a tool call or a final reply
+        parse_agent_response(&format!("{}", response))
+    }
+
+    fn generate_nudge(
+        &self,
+        snapshot: &NarrativeSnapshot,
+        memory: &WorkingMemory,
+    ) -> Result<NarrativeNudge, String> {
+        let session = Session::with_instructions(&self.model, NUDGE_SYSTEM_PROMPT)
+            .map_err(|err| err.to_string())?;
+
+        let open_tasks: Vec<_> = memory.story_backlog.iter()
+            .filter(|t| matches!(t.status, crate::domain::TaskStatus::Open))
+            .map(|t| &t.description)
+            .collect();
+
+        let prompt = format!(
+            "Open Goals: {:?}\nModel Status: {} characters, {} events.\nNudge:",
+            open_tasks,
+            snapshot.characters.len(),
+            snapshot.events.len()
+        );
+
+        let response = session
+            .respond(&prompt, &Self::options())
+            .map_err(|err| err.to_string())?;
+
+        Ok(NarrativeNudge {
+            message: format!("{}", response).trim().to_string(),
+        })
+    }
+}
+
+const AGENT_SYSTEM_PROMPT: &str = r#"You are Lekhani, a Story Architect.
+Help the writer build a structured screenplay model.
+
+RULES:
+1. The writer is the user. Never address them as a character.
+2. Never commit canonical ontology changes directly. You may only propose changes via ontology.propose_commit.
+3. Be concise.
+4. Your entire response must be exactly one JSON object in one of these two forms:
+   - {"tool_calls":[{"name":"ontology.get_snapshot","parameters":{},"thought":"short optional reason"}]}
+   - {"final_reply":{"intent":"Guide","title":"Idea","body":"How about a desert setting?"}}
+5. Do not return any other top-level keys. In particular, never return a bare {"thought": ...} object.
+6. If you are unsure, return final_reply instead of a tool call.
+
+Allowed tools: ontology.get_snapshot, assistant.get_working_memory, ontology.propose_commit, assistant.add_story_task."#;
+
+const NUDGE_SYSTEM_PROMPT: &str = "You are a story coach. Based on the state, give a friendly 1-sentence nudge to keep the user writing.";
+
+fn build_agent_turn_prompt(
+    prompt: &str,
+    memory: &WorkingMemory,
+    observations: &[(McpToolCall, McpToolResult)],
+) -> String {
+    let mut parts = Vec::new();
+    parts.push(format!("User: {}", prompt));
+    
+    // Just the count and summary, no full backlog
+    parts.push(format!(
+        "Status: {} open tasks. Focus: {}.",
+        memory.story_backlog.iter().filter(|t| matches!(t.status, crate::domain::TaskStatus::Open)).count(),
+        memory.current_focus.as_ref().map(|f| f.summary.as_str()).unwrap_or("None")
+    ));
+
+    if !observations.is_empty() {
+        parts.push("Recent tool results:".to_string());
+        // Only keep last 2 observations to save space
+        for (call, result) in observations.iter().rev().take(2).rev() {
+            let result_str = match result {
+                McpToolResult::Snapshot(s) => format!("{} chars, {} events", s.characters.len(), s.events.len()),
+                McpToolResult::Empty => "Success".to_string(),
+                _ => "Data returned".to_string(),
+            };
+            parts.push(format!("{}: {}", call.name(), result_str));
+        }
+    }
+
+    parts.push(
+        "Respond with exactly one JSON object using either {\"tool_calls\":[...]} or {\"final_reply\":{...}}."
+            .to_string(),
+    );
+    parts.join("\n")
+}
+
+fn parse_agent_response(text: &str) -> Result<AssistantResponse, String> {
+    // Try to repair truncated JSON
+    let mut repaired_text = text.trim().to_string();
+    let mut in_string = false;
+    let mut escaped = false;
+    for c in repaired_text.chars() {
+        if c == '\\' { escaped = !escaped; }
+        else if c == '"' && !escaped { in_string = !in_string; escaped = false; }
+        else { escaped = false; }
+    }
+    if in_string { repaired_text.push('"'); }
+    let open_braces = repaired_text.chars().filter(|&c| c == '{').count();
+    let close_braces = repaired_text.chars().filter(|&c| c == '}').count();
+    if open_braces > close_braces {
+        for _ in 0..(open_braces - close_braces) { repaired_text.push('}'); }
+    }
+    let text = &repaired_text;
+
+    let json_val = parse_single_json_object(text)?;
+
+    // 1. Final Reply detection
+    if let Some(r) = json_val.get("final_reply") {
+        let intent = match r.get("intent").and_then(|v| v.as_str()).unwrap_or("") {
+            "MutateOntology" => AssistantIntent::MutateOntology,
+            "Query" => AssistantIntent::Query,
+            "Clarify" => AssistantIntent::Clarify,
+            _ => AssistantIntent::Guide,
+        };
+        let title = r.get("title").and_then(|v| v.as_str()).unwrap_or("Architect").to_string();
+        let body = match r.get("body") {
+            Some(serde_json::Value::String(s)) => s.clone(),
+            Some(serde_json::Value::Object(obj)) => obj.iter().map(|(k, v)| format!("• {}: {}", k.replace('_', " "), v.as_str().unwrap_or(&v.to_string()))).collect::<Vec<_>>().join("\n"),
+            _ => "".to_string(),
+        };
+        return Ok(AssistantResponse::FinalReply { intent, title, body });
+    }
+
+    // 2. Tool Call detection
+    if let Some(calls) = json_val.get("tool_calls").and_then(|v| v.as_array()) {
+        if calls.is_empty() {
+            return Err("assistant returned an empty tool_calls array".to_string());
+        }
+
+        let mut tool_calls = Vec::with_capacity(calls.len());
+        for call_val in calls {
+            let name = call_val
+                .get("name")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| "assistant tool call is missing name".to_string())?;
+            let params = call_val
+                .get("parameters")
+                .or_else(|| call_val.get("arguments"))
+                .cloned()
+                .unwrap_or_else(|| serde_json::json!({}));
+            let thought = call_val
+                .get("thought")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let call = map_tool_call(name, &params)?;
+            tool_calls.push(AssistantToolCall { call, thought });
+        }
+
+        return Ok(AssistantResponse::ToolCalls(tool_calls));
+    }
+
+    Err("assistant returned JSON without a valid final_reply or tool_calls envelope".to_string())
+}
+
+fn map_tool_call(name: &str, params: &serde_json::Value) -> Result<McpToolCall, String> {
+    match name {
+        "ontology.get_snapshot" => Ok(McpToolCall::GetNarrativeSnapshot),
+        "assistant.get_working_memory" => Ok(McpToolCall::GetWorkingMemory),
+        "ontology.propose_commit" => {
+            let title = params.get("title").and_then(|v| v.as_str()).unwrap_or("Proposal").to_string();
+            let summary = params.get("summary").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let entity = params.get("entity").and_then(|v| serde_json::from_value(v.clone()).ok());
+            let relationship = params.get("relationship").and_then(|v| serde_json::from_value(v.clone()).ok());
+            Ok(McpToolCall::ProposeOntologyCommit {
+                sync_run_id: None,
+                title,
+                summary,
+                entity,
+                relationship,
+            })
+        },
+        "assistant.add_story_task" => {
+            let task_val = params.get("task").ok_or("Missing task")?;
+            let task: StoryTask = serde_json::from_value(task_val.clone()).map_err(|e| e.to_string())?;
+            Ok(McpToolCall::AddStoryTask { task })
+        },
+        _ => Err(format!("Unknown tool: {}", name)),
+    }
+}
+
+fn parse_single_json_object(text: &str) -> Result<serde_json::Value, String> {
+    if let Ok(value) = serde_json::from_str::<serde_json::Value>(text) {
+        return Ok(value);
+    }
+
+    if let Some(start) = text.find('{') {
+        if let Some(end) = text.rfind('}') {
+            return serde_json::from_str(&text[start..=end])
+                .map_err(|err| format!("assistant returned invalid JSON: {err}"));
+        }
+    }
+
+    Err("assistant did not return a JSON object".to_string())
 }
 
 impl FmRsNarrativeEngine {
@@ -27,7 +246,7 @@ impl FmRsNarrativeEngine {
     fn options() -> GenerationOptions {
         GenerationOptions::builder()
             .temperature(0.2)
-            .max_response_tokens(400)
+            .max_response_tokens(512)
             .build()
     }
 
@@ -133,7 +352,7 @@ impl NudgeGenerator for FmRsNarrativeEngine {
             .as_deref()
             .and_then(parse_nudge_message)
             .or_else(|| heuristic_nudge(snapshot))
-            .or_else(|| StubNarrativeEngine.generate_nudge(snapshot).ok().map(|nudge| nudge.message));
+            .or_else(|| NudgeGenerator::generate_nudge(&StubNarrativeEngine, snapshot).ok().map(|nudge| nudge.message));
 
         Ok(NarrativeNudge {
             message: message.ok_or_else(|| {

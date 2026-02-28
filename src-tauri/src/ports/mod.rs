@@ -8,7 +8,10 @@ pub mod sync_ports;
 pub mod sync_repository;
 
 pub use assistant_memory_repository::WorkingMemoryRepository;
-pub use llm_ports::{CharacterParser, EventParser, NudgeGenerator};
+pub use llm_ports::{
+    AssistantAgent, AssistantResponse, AssistantToolCall, CharacterParser, EventParser,
+    NudgeGenerator,
+};
 pub use lint_repository::LintRepository;
 pub use link_repository::LinkRepository;
 pub use narrative_repository::NarrativeRepository;
