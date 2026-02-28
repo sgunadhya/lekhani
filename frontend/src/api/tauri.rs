@@ -1,0 +1,186 @@
+use crate::api::dto::{
+    DocumentFileDto, NarrativeCharacterDto, NarrativeEventDto, NarrativeNudgeDto,
+    NarrativeSnapshotDto, ParseDescriptionRequest, SaveDocumentRequest, SaveScreenplayRequest,
+    ScreenplayDto,
+};
+use gloo_utils::format::JsValueSerdeExt;
+use js_sys::{Function, Object, Promise, Reflect};
+use wasm_bindgen::prelude::*;
+use wasm_bindgen::closure::Closure;
+use wasm_bindgen::JsCast;
+use wasm_bindgen_futures::JsFuture;
+
+fn tauri_invoke_function() -> Result<Function, String> {
+    let tauri = tauri_namespace()?;
+    let namespace = Reflect::get(&tauri, &JsValue::from_str("core"))
+        .ok()
+        .filter(|value| !value.is_undefined() && !value.is_null())
+        .or_else(|| Reflect::get(&tauri, &JsValue::from_str("tauri")).ok())
+        .ok_or_else(|| "Tauri invoke namespace is not available".to_string())?;
+
+    Reflect::get(&namespace, &JsValue::from_str("invoke"))
+        .map_err(|err| format!("failed to access Tauri invoke: {err:?}"))?
+        .dyn_into::<Function>()
+        .map_err(|_| "Tauri invoke is not a function".to_string())
+}
+
+fn tauri_namespace() -> Result<JsValue, String> {
+    let window = web_sys::window().ok_or_else(|| "window is not available".to_string())?;
+    let tauri = Reflect::get(window.as_ref(), &JsValue::from_str("__TAURI__"))
+        .map_err(|err| format!("failed to access __TAURI__: {err:?}"))?;
+
+    if tauri.is_undefined() || tauri.is_null() {
+        return Err("Tauri API is not available in this context".to_string());
+    }
+
+    Ok(tauri)
+}
+
+async fn invoke_tauri(cmd: &str, args: JsValue) -> Result<JsValue, String> {
+    let invoke = tauri_invoke_function()?;
+    let promise = invoke
+        .call2(&JsValue::NULL, &JsValue::from_str(cmd), &args)
+        .map_err(|err| format!("failed to call Tauri invoke: {err:?}"))?;
+
+    JsFuture::from(js_sys::Promise::from(promise))
+        .await
+        .map_err(|err| format!("invoke error: {err:?}"))
+}
+
+pub async fn get_screenplays() -> Result<Vec<ScreenplayDto>, String> {
+    let js_value = invoke_tauri("get_screenplays", Object::new().into()).await?;
+    js_value
+        .into_serde()
+        .map_err(|err| format!("Deserialize error: {err}"))
+}
+
+pub async fn get_current_project() -> Result<DocumentFileDto, String> {
+    let js_value = invoke_tauri("get_current_project", Object::new().into()).await?;
+    js_value
+        .into_serde()
+        .map_err(|err| format!("Deserialize error: {err}"))
+}
+
+pub async fn save_screenplay(screenplay: ScreenplayDto) -> Result<ScreenplayDto, String> {
+    let args = SaveScreenplayRequest { screenplay };
+    let js_args =
+        JsValue::from_serde(&args).map_err(|err| format!("JsValue conversion error: {err}"))?;
+    let js_value = invoke_tauri("save_screenplay", js_args).await?;
+    js_value
+        .into_serde()
+        .map_err(|err| format!("Deserialize error: {err}"))
+}
+
+pub async fn import_fountain_document() -> Result<Option<ScreenplayDto>, String> {
+    let js_value = invoke_tauri("import_fountain_document", Object::new().into()).await?;
+    js_value
+        .into_serde()
+        .map_err(|err| format!("Deserialize error: {err}"))
+}
+
+pub async fn export_fountain_document(screenplay: ScreenplayDto) -> Result<Option<String>, String> {
+    let args = SaveDocumentRequest {
+        screenplay,
+        file_path: None,
+    };
+    let js_args =
+        JsValue::from_serde(&args).map_err(|err| format!("JsValue conversion error: {err}"))?;
+    let js_value = invoke_tauri("export_fountain_document", js_args).await?;
+    js_value
+        .into_serde()
+        .map_err(|err| format!("Deserialize error: {err}"))
+}
+
+pub async fn open_project_document() -> Result<Option<DocumentFileDto>, String> {
+    let js_value = invoke_tauri("open_project_document", Object::new().into()).await?;
+    js_value
+        .into_serde()
+        .map_err(|err| format!("Deserialize error: {err}"))
+}
+
+pub async fn save_project_document_as(
+    screenplay: ScreenplayDto,
+    file_path: Option<String>,
+) -> Result<Option<DocumentFileDto>, String> {
+    let args = SaveDocumentRequest {
+        screenplay,
+        file_path,
+    };
+    let js_args =
+        JsValue::from_serde(&args).map_err(|err| format!("JsValue conversion error: {err}"))?;
+    let js_value = invoke_tauri("save_project_document_as", js_args).await?;
+    js_value
+        .into_serde()
+        .map_err(|err| format!("Deserialize error: {err}"))
+}
+
+pub async fn parse_character(description: String) -> Result<NarrativeCharacterDto, String> {
+    let args = ParseDescriptionRequest { description };
+    let js_args =
+        JsValue::from_serde(&args).map_err(|err| format!("JsValue conversion error: {err}"))?;
+    let js_value = invoke_tauri("parse_character", js_args).await?;
+    js_value
+        .into_serde()
+        .map_err(|err| format!("Deserialize error: {err}"))
+}
+
+pub async fn parse_event(description: String) -> Result<NarrativeEventDto, String> {
+    let args = ParseDescriptionRequest { description };
+    let js_args =
+        JsValue::from_serde(&args).map_err(|err| format!("JsValue conversion error: {err}"))?;
+    let js_value = invoke_tauri("parse_event", js_args).await?;
+    js_value
+        .into_serde()
+        .map_err(|err| format!("Deserialize error: {err}"))
+}
+
+pub async fn get_nudge() -> Result<NarrativeNudgeDto, String> {
+    let js_value = invoke_tauri("get_nudge", Object::new().into()).await?;
+    js_value
+        .into_serde()
+        .map_err(|err| format!("Deserialize error: {err}"))
+}
+
+pub async fn get_narrative_snapshot() -> Result<NarrativeSnapshotDto, String> {
+    let js_value = invoke_tauri("get_narrative_snapshot", Object::new().into()).await?;
+    js_value
+        .into_serde()
+        .map_err(|err| format!("Deserialize error: {err}"))
+}
+
+pub async fn listen_for_project_opened<F>(mut on_opened: F) -> Result<(), String>
+where
+    F: FnMut() + 'static,
+{
+    let tauri = tauri_namespace()?;
+    let event_namespace = Reflect::get(&tauri, &JsValue::from_str("event"))
+        .map_err(|err| format!("failed to access Tauri event namespace: {err:?}"))?;
+
+    if event_namespace.is_undefined() || event_namespace.is_null() {
+        return Ok(());
+    }
+
+    let listen = Reflect::get(&event_namespace, &JsValue::from_str("listen"))
+        .map_err(|err| format!("failed to access Tauri event listener: {err:?}"))?
+        .dyn_into::<Function>()
+        .map_err(|_| "Tauri event listen is not a function".to_string())?;
+
+    let callback = Closure::wrap(Box::new(move |_payload: JsValue| {
+        on_opened();
+    }) as Box<dyn FnMut(JsValue)>);
+
+    let promise = listen
+        .call2(
+            &event_namespace,
+            &JsValue::from_str("project-opened"),
+            callback.as_ref().unchecked_ref(),
+        )
+        .map_err(|err| format!("failed to register project-opened listener: {err:?}"))?;
+
+    let _ = JsFuture::from(Promise::from(promise))
+        .await
+        .map_err(|err| format!("failed to await project-opened listener: {err:?}"))?;
+
+    callback.forget();
+    Ok(())
+}

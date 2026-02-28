@@ -17,11 +17,14 @@ tauri-build = { version = "2.5.4", features = [] }
 
 [dependencies]
 tauri = { version = "2.10.0", features = ["wry", "custom-protocol"] }
+tauri-plugin-dialog = "2"
 tauri-plugin-log = "2"
 log = "0.4"
 chrono = { workspace = true }
 serde = { workspace = true }
+serde_json = { workspace = true }
 uuid = { workspace = true }
+rusqlite = { version = "0.32", features = ["bundled"] }
 
 [features]
 default = ["custom-protocol"]
