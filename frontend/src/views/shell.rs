@@ -42,7 +42,7 @@ pub fn WorkspaceShell() -> impl IntoView {
 
     let refresh_nudge = move |_| set_nudge_nonce.update(|value| *value += 1);
 
-    let open_document = move |_| {
+    let open_document = move || {
         let document = document;
         let file_path = document_context.file_path;
         spawn_local(async move {
@@ -53,7 +53,7 @@ pub fn WorkspaceShell() -> impl IntoView {
         });
     };
 
-    let import_fountain = move |_| {
+    let import_fountain = move || {
         let document = document;
         spawn_local(async move {
             if let Ok(Some(imported_screenplay)) = tauri::import_fountain_document().await {
@@ -87,7 +87,7 @@ pub fn WorkspaceShell() -> impl IntoView {
         });
     };
 
-    let export_fountain = move |_| {
+    let export_fountain = move || {
         let document = document;
         spawn_local(async move {
             let Some(current_document) = document.get_untracked() else {
@@ -97,6 +97,68 @@ pub fn WorkspaceShell() -> impl IntoView {
             let _ = tauri::export_fountain_document(current_document).await;
         });
     };
+
+    spawn_local({
+        let open_document = open_document;
+        async move {
+            let _ = tauri::listen_for_menu_action("menu-open-project", move || {
+                open_document();
+            })
+            .await;
+        }
+    });
+
+    spawn_local({
+        let save_project = save_project;
+        async move {
+            let _ = tauri::listen_for_menu_action("menu-save-project", move || {
+                save_project(false);
+            })
+            .await;
+        }
+    });
+
+    spawn_local({
+        let save_project = save_project;
+        async move {
+            let _ = tauri::listen_for_menu_action("menu-save-project-as", move || {
+                save_project(true);
+            })
+            .await;
+        }
+    });
+
+    spawn_local({
+        let import_fountain = import_fountain;
+        async move {
+            let _ = tauri::listen_for_menu_action("menu-import-fountain", move || {
+                import_fountain();
+            })
+            .await;
+        }
+    });
+
+    spawn_local({
+        let export_fountain = export_fountain;
+        async move {
+            let _ = tauri::listen_for_menu_action("menu-export-fountain", move || {
+                export_fountain();
+            })
+            .await;
+        }
+    });
+
+    spawn_local({
+        let active_project = active_project;
+        async move {
+            let _ = tauri::listen_for_menu_action("menu-reload-project", move || {
+                spawn_local(async move {
+                    _ = active_project.refetch();
+                });
+            })
+            .await;
+        }
+    });
 
     view! {
         <div class="workspace-shell">
@@ -147,18 +209,13 @@ pub fn WorkspaceShell() -> impl IntoView {
                     </button>
                 </div>
 
-                <div class="document-actions">
-                    <button class="secondary-button" on:click=open_document>"Open"</button>
-                    <button
-                        class="secondary-button"
-                        on:click=move |_| save_project(false)
-                    >
-                        "Save"
-                    </button>
-                </div>
             </header>
 
-            <div class="workspace-body">
+            <div
+                class="workspace-body"
+                class:workspace-body-single=move || mode.get() == AppMode::Narrative
+                class:workspace-body-wide=move || mode.get() != AppMode::Visual
+            >
                 <main class="workspace-main">
                     {move || match mode.get() {
                         AppMode::Narrative => view! { <ChatInterface/> }.into_view(),
@@ -167,48 +224,35 @@ pub fn WorkspaceShell() -> impl IntoView {
                     }}
                 </main>
 
-                <aside class="workspace-rail">
-                    <section class="rail-section">
-                        <span class="eyebrow">"Project"</span>
-                        <p>{move || document_context.file_path.get().unwrap_or_else(|| "Unsaved .lekhani project".to_string())}</p>
-                        <div class="rail-actions">
-                            <button class="secondary-button" on:click=move |_| save_project(true)>"Save As"</button>
-                            <button class="secondary-button" on:click=import_fountain>"Import Fountain"</button>
-                            <button class="secondary-button" on:click=export_fountain>"Export Fountain"</button>
-                            <button
-                                class="secondary-button"
-                                on:click=move |_| {
-                                    spawn_local(async move {
-                                        _ = active_project.refetch();
-                                    });
-                                }
-                            >
-                                "Reload"
-                            </button>
-                        </div>
-                    </section>
+                <Show when=move || mode.get() == AppMode::Visual>
+                    <aside class="workspace-rail">
+                        <section class="rail-section">
+                            <span class="eyebrow">"Project"</span>
+                            <p>{move || document_context.file_path.get().unwrap_or_else(|| "Unsaved .lekhani project".to_string())}</p>
+                        </section>
 
-                    <section class="rail-section">
-                        <span class="eyebrow">"Current Nudge"</span>
-                        {move || match nudge.get() {
-                            None => view! { <p>"Loading nudge..."</p> }.into_view(),
-                            Some(Ok(nudge)) => view! { <p>{nudge.message}</p> }.into_view(),
-                            Some(Err(err)) => view! { <p class="error">{err}</p> }.into_view(),
-                        }}
-                    </section>
+                        <section class="rail-section">
+                            <span class="eyebrow">"Current Nudge"</span>
+                            {move || match nudge.get() {
+                                None => view! { <p>"Loading nudge..."</p> }.into_view(),
+                                Some(Ok(nudge)) => view! { <p>{nudge.message}</p> }.into_view(),
+                                Some(Err(err)) => view! { <p class="error">{err}</p> }.into_view(),
+                            }}
+                        </section>
 
-                    <section class="rail-section">
-                        <span class="eyebrow">"Setup Focus"</span>
-                        <ul class="focus-list">
-                            <li>"Define the lead and their core conflict"</li>
-                            <li>"Clarify the opening event"</li>
-                            <li>"Link narrative setup back to Fountain scenes"</li>
-                        </ul>
-                        <div class="rail-actions">
-                            <button class="secondary-button" on:click=refresh_nudge>"Refresh Nudge"</button>
-                        </div>
-                    </section>
-                </aside>
+                        <section class="rail-section">
+                            <span class="eyebrow">"Setup Focus"</span>
+                            <ul class="focus-list">
+                                <li>"Define the lead and their core conflict"</li>
+                                <li>"Clarify the opening event"</li>
+                                <li>"Link narrative setup back to Fountain scenes"</li>
+                            </ul>
+                            <div class="rail-actions">
+                                <button class="secondary-button" on:click=refresh_nudge>"Refresh Nudge"</button>
+                            </div>
+                        </section>
+                    </aside>
+                </Show>
             </div>
         </div>
     }

@@ -164,6 +164,26 @@ pub async fn listen_for_project_opened<F>(mut on_opened: F) -> Result<(), String
 where
     F: FnMut() + 'static,
 {
+    listen_for_event("project-opened", move |_payload| {
+        on_opened();
+    })
+    .await
+}
+
+pub async fn listen_for_menu_action<F>(event_name: &'static str, mut on_action: F) -> Result<(), String>
+where
+    F: FnMut() + 'static,
+{
+    listen_for_event(event_name, move |_payload| {
+        on_action();
+    })
+    .await
+}
+
+async fn listen_for_event<F>(event_name: &'static str, mut on_event: F) -> Result<(), String>
+where
+    F: FnMut(JsValue) + 'static,
+{
     let tauri = tauri_namespace()?;
     let event_namespace = Reflect::get(&tauri, &JsValue::from_str("event"))
         .map_err(|err| format!("failed to access Tauri event namespace: {err:?}"))?;
@@ -177,21 +197,21 @@ where
         .dyn_into::<Function>()
         .map_err(|_| "Tauri event listen is not a function".to_string())?;
 
-    let callback = Closure::wrap(Box::new(move |_payload: JsValue| {
-        on_opened();
+    let callback = Closure::wrap(Box::new(move |payload: JsValue| {
+        on_event(payload);
     }) as Box<dyn FnMut(JsValue)>);
 
     let promise = listen
         .call2(
             &event_namespace,
-            &JsValue::from_str("project-opened"),
+            &JsValue::from_str(event_name),
             callback.as_ref().unchecked_ref(),
         )
-        .map_err(|err| format!("failed to register project-opened listener: {err:?}"))?;
+        .map_err(|err| format!("failed to register {event_name} listener: {err:?}"))?;
 
     let _ = JsFuture::from(Promise::from(promise))
         .await
-        .map_err(|err| format!("failed to await project-opened listener: {err:?}"))?;
+        .map_err(|err| format!("failed to await {event_name} listener: {err:?}"))?;
 
     callback.forget();
     Ok(())

@@ -16,12 +16,41 @@ use adapters::tauri::{
     preview_narrative_input, save_project_document_as, save_screenplay, AppState,
 };
 use std::sync::Arc;
+use tauri::menu::{AboutMetadataBuilder, MenuBuilder, MenuItemBuilder, SubmenuBuilder};
 use tauri::{Emitter, Manager, RunEvent};
+
+const MENU_OPEN_PROJECT: &str = "file.open-project";
+const MENU_SAVE_PROJECT: &str = "file.save-project";
+const MENU_SAVE_PROJECT_AS: &str = "file.save-project-as";
+const MENU_IMPORT_FOUNTAIN: &str = "file.import-fountain";
+const MENU_EXPORT_FOUNTAIN: &str = "file.export-fountain";
+const MENU_RELOAD_PROJECT: &str = "file.reload-project";
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .on_menu_event(|app, event| match event.id().0.as_str() {
+            MENU_OPEN_PROJECT => {
+                let _ = app.emit("menu-open-project", ());
+            }
+            MENU_SAVE_PROJECT => {
+                let _ = app.emit("menu-save-project", ());
+            }
+            MENU_SAVE_PROJECT_AS => {
+                let _ = app.emit("menu-save-project-as", ());
+            }
+            MENU_IMPORT_FOUNTAIN => {
+                let _ = app.emit("menu-import-fountain", ());
+            }
+            MENU_EXPORT_FOUNTAIN => {
+                let _ = app.emit("menu-export-fountain", ());
+            }
+            MENU_RELOAD_PROJECT => {
+                let _ = app.emit("menu-reload-project", ());
+            }
+            _ => {}
+        })
         .setup(|app| {
             #[cfg(debug_assertions)]
             {
@@ -74,6 +103,9 @@ pub fn run() {
                 let state = app.state::<AppState>();
                 let _ = state.switch_project_path(&project_path);
             }
+
+            let menu = build_app_menu(app)?;
+            let _ = app.set_menu(menu);
 
             Ok(())
         })
@@ -132,6 +164,84 @@ pub fn run() {
             }
             _ => {}
         });
+}
+
+fn build_app_menu<R: tauri::Runtime>(app: &tauri::App<R>) -> tauri::Result<tauri::menu::Menu<R>> {
+    let about = AboutMetadataBuilder::new()
+        .name(Some("Lekhani".to_string()))
+        .version(Some("0.1.0".to_string()))
+        .authors(Some(vec!["Sushant Srivastava".to_string()]))
+        .build();
+
+    let app_menu = SubmenuBuilder::new(app, "Lekhani")
+        .about(Some(about))
+        .separator()
+        .services()
+        .separator()
+        .hide()
+        .hide_others()
+        .show_all()
+        .separator()
+        .quit()
+        .build()?;
+
+    let file_menu = SubmenuBuilder::new(app, "File")
+        .item(
+            &MenuItemBuilder::with_id(MENU_OPEN_PROJECT, "Open…")
+                .accelerator("CmdOrCtrl+O")
+                .build(app)?,
+        )
+        .item(
+            &MenuItemBuilder::with_id(MENU_SAVE_PROJECT, "Save")
+                .accelerator("CmdOrCtrl+S")
+                .build(app)?,
+        )
+        .item(
+            &MenuItemBuilder::with_id(MENU_SAVE_PROJECT_AS, "Save As…")
+                .accelerator("CmdOrCtrl+Shift+S")
+                .build(app)?,
+        )
+        .separator()
+        .item(
+            &MenuItemBuilder::with_id(MENU_IMPORT_FOUNTAIN, "Import Fountain…")
+                .build(app)?,
+        )
+        .item(
+            &MenuItemBuilder::with_id(MENU_EXPORT_FOUNTAIN, "Export Fountain…")
+                .build(app)?,
+        )
+        .separator()
+        .item(
+            &MenuItemBuilder::with_id(MENU_RELOAD_PROJECT, "Reload Project")
+                .accelerator("CmdOrCtrl+R")
+                .build(app)?,
+        )
+        .close_window()
+        .build()?;
+
+    let edit_menu = SubmenuBuilder::new(app, "Edit")
+        .undo()
+        .redo()
+        .separator()
+        .cut()
+        .copy()
+        .paste()
+        .select_all()
+        .build()?;
+
+    let view_menu = SubmenuBuilder::new(app, "View")
+        .fullscreen()
+        .separator()
+        .minimize()
+        .maximize()
+        .build()?;
+
+    MenuBuilder::new(app)
+        .item(&app_menu)
+        .item(&file_menu)
+        .item(&edit_menu)
+        .item(&view_menu)
+        .build()
 }
 
 fn startup_project_path() -> Option<std::path::PathBuf> {
