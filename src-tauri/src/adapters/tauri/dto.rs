@@ -4,8 +4,9 @@ use uuid::Uuid;
 
 use crate::domain::{
     AssistantCapability, AssistantIntent, ChangeType, NarrativeCharacter, NarrativeCommitTarget,
-    NarrativeEvent, NarrativeMessagePreview, NarrativeNudge, NarrativeSnapshot, ProvenanceRecord,
-    SyncCandidate, SyncRun, WorkingMemory, WritePolicy,
+    NarrativeEvent, NarrativeMessagePreview, NarrativeNudge, NarrativeSnapshot,
+    NarrativeSuggestedAction, NarrativeSuggestionAction, ProvenanceRecord, SyncCandidate,
+    SyncRun, WorkingMemory, WritePolicy,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -60,6 +61,11 @@ pub struct CommitNarrativeInputRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NarrativeSuggestionActionRequest {
+    pub action: NarrativeSuggestionAction,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NarrativeTurnDto {
     pub reply_title: String,
     pub reply_body: String,
@@ -75,6 +81,7 @@ pub struct AssistantTurnDto {
     pub reply_body: String,
     pub committed: NarrativeMessagePreview,
     pub working_memory: WorkingMemory,
+    pub suggested_actions: Vec<NarrativeSuggestedAction>,
 }
 
 pub type WorkingMemoryDto = WorkingMemory;

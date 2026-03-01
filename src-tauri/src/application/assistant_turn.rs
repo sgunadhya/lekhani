@@ -90,6 +90,29 @@ pub trait ResponseStateFinalizer: Send + Sync {
     ) -> WorkingMemory;
 }
 
+pub trait NarrativeConversationSupport: Send + Sync {
+    fn classify_dialogue_act(&self, context: DialogueActContext<'_>) -> DialogueAct;
+    fn update_belief_state(&self, context: DialogueStateContext<'_>) -> DialogueStateUpdate;
+    fn plan_capabilities(&self, context: CapabilityPlanningContext<'_>) -> CapabilityPlan;
+    fn allow_mutation(&self, context: AssistantIntentContext<'_>) -> bool;
+    fn fallback_response(
+        &self,
+        prompt: &str,
+        preview: &NarrativeMessagePreview,
+        memory: &WorkingMemory,
+        plan: &CapabilityPlan,
+    ) -> AssistantResponse;
+    fn finalize_response_state(
+        &self,
+        memory: WorkingMemory,
+        prompt: &str,
+        plan: &CapabilityPlan,
+        title: &str,
+        body: &str,
+        focus_summary: Option<&str>,
+    ) -> WorkingMemory;
+}
+
 pub fn is_underspecified_followup(prompt: &str, preview: &NarrativeMessagePreview) -> bool {
     is_low_information_followup(prompt, preview)
 }
@@ -210,6 +233,7 @@ impl BeliefStateUpdater for HeuristicBeliefStateUpdater {
             DialogueAct::Brainstorm => {
                 memory.recent_corrections.clear();
                 memory.conversation_mode = ConversationMode::Brainstorming;
+                memory.open_questions.clear();
             }
             DialogueAct::Confirmation => {
                 memory.recent_corrections.clear();
@@ -333,20 +357,46 @@ impl AssistantFallbackResponder for HeuristicAssistantFallbackResponder {
         }
         .to_string();
 
-        let body = if let Some(correction) = memory.recent_corrections.first() {
-            format!(
-                "Understood. I will respect this correction:\n{}\nGive me one positive detail to replace it.",
-                correction.summary
-            )
-        } else if let Some(constraint) = memory
-            .constraints
-            .iter()
-            .find(|constraint| constraint.operator != ConstraintOperator::Correct)
-        {
-            format!(
-                "I'm respecting this active constraint: {:?} {:?} {}.\nGive me one concrete detail that fits it.",
-                constraint.scope, constraint.operator, constraint.value
-            )
+        let prefer_clarification_state = matches!(plan.intent, AssistantIntent::Clarify);
+
+        let body = if prefer_clarification_state {
+            if let Some(correction) = memory.recent_corrections.first() {
+                format!(
+                    "Understood. I will respect this correction:\n{}\nGive me one positive detail to replace it.",
+                    correction.summary
+                )
+            } else if let Some(constraint) = memory
+                .constraints
+                .iter()
+                .find(|constraint| constraint.operator != ConstraintOperator::Correct)
+            {
+                format!(
+                    "I'm respecting this active constraint: {:?} {:?} {}.\nGive me one concrete detail that fits it.",
+                    constraint.scope, constraint.operator, constraint.value
+                )
+            } else if is_low_information_followup(prompt, preview) {
+                if let Some(focus) = memory.current_focus.as_ref() {
+                    if let Some(constraint) = memory
+                        .constraints
+                        .iter()
+                        .find(|constraint| constraint.operator != ConstraintOperator::Correct)
+                    {
+                        format!(
+                            "We can continue from the current direction:\n{}\nI'm also respecting this constraint: {}.\nTell me one concrete aspect to develop next.",
+                            focus.summary, constraint.value
+                        )
+                    } else {
+                        format!(
+                            "We can continue from the current direction:\n{}\nTell me one concrete aspect to develop next.",
+                            focus.summary
+                        )
+                    }
+                } else {
+                    "We need one concrete anchor to continue. Give me a character, event, relationship, or setting detail.".to_string()
+                }
+            } else {
+                fallback_body(prompt, preview, memory, plan)
+            }
         } else if is_low_information_followup(prompt, preview) {
             if let Some(focus) = memory.current_focus.as_ref() {
                 if let Some(constraint) = memory
@@ -405,11 +455,7 @@ impl AssistantFallbackResponder for HeuristicAssistantFallbackResponder {
                 focus.summary
             )
         } else {
-            let trimmed = prompt.trim();
-            format!(
-                "I can help shape this. Give me one concrete character, event, relationship, or setting detail to build from.\nCurrent note: {}",
-                trimmed
-            )
+            fallback_body(prompt, preview, memory, plan)
         };
 
         AssistantResponse::FinalReply {
@@ -418,6 +464,77 @@ impl AssistantFallbackResponder for HeuristicAssistantFallbackResponder {
             focus_summary: None,
             body,
         }
+    }
+}
+
+fn fallback_body(
+    prompt: &str,
+    preview: &NarrativeMessagePreview,
+    memory: &WorkingMemory,
+    plan: &CapabilityPlan,
+) -> String {
+    if is_low_information_followup(prompt, preview) {
+        if let Some(focus) = memory.current_focus.as_ref() {
+            if let Some(constraint) = memory
+                .constraints
+                .iter()
+                .find(|constraint| constraint.operator != ConstraintOperator::Correct)
+            {
+                format!(
+                    "We can continue from the current direction:\n{}\nI'm also respecting this constraint: {}.\nTell me one concrete aspect to develop next.",
+                    focus.summary, constraint.value
+                )
+            } else {
+                format!(
+                    "We can continue from the current direction:\n{}\nTell me one concrete aspect to develop next.",
+                    focus.summary
+                )
+            }
+        } else {
+            "We need one concrete anchor to continue. Give me a character, event, relationship, or setting detail.".to_string()
+        }
+    } else if let Some(reply_body) = preview.reply_body.as_ref().filter(|value| !value.trim().is_empty())
+    {
+        reply_body.clone()
+    } else if !preview.changes.is_empty() {
+        let focus = preview
+            .changes
+            .iter()
+            .take(2)
+            .map(|change| format!("{}: {}", change.label, change.detail))
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        match plan.write_policy {
+            WritePolicy::CandidateOnly => format!(
+                "I found a plausible story move, but I kept it as a proposal for now.\n{}",
+                focus
+            ),
+            WritePolicy::NoWrite => format!(
+                "I can work with this, but I need a bit more grounding before I treat it as story structure.\n{}",
+                focus
+            ),
+            WritePolicy::SafeCommit => format!(
+                "This looks grounded enough to shape the story model.\n{}",
+                focus
+            ),
+        }
+    } else if let Some(question) = memory.open_questions.first() {
+        format!(
+            "I'm tracking this as the most useful next question:\n{}",
+            question.question
+        )
+    } else if let Some(focus) = memory.current_focus.as_ref() {
+        format!(
+            "We're currently focused on {}. Give me one concrete detail to build from.",
+            focus.summary
+        )
+    } else {
+        let trimmed = prompt.trim();
+        format!(
+            "I can help shape this. Give me one concrete character, event, relationship, or setting detail to build from.\nCurrent note: {}",
+            trimmed
+        )
     }
 }
 

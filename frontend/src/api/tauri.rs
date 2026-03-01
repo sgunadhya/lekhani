@@ -1,5 +1,6 @@
 use crate::api::dto::{
     AssistantTurnDto, CommitNarrativeInputRequest, DocumentFileDto, LlmStatusDto,
+    NarrativeSuggestionActionDto,
     NarrativeNudgeDto, NarrativeSnapshotDto, ParseDescriptionRequest, PreviewNarrativeInputDto,
     SaveDocumentRequest, SyncDebugDto, WorkingMemoryDto,
     SaveScreenplayRequest, ScreenplayDto,
@@ -155,6 +156,18 @@ pub async fn submit_assistant_turn(
     let args = CommitNarrativeInputRequest { prompt };
     let js_args = named_request_args(&args)?;
     let js_value = invoke_tauri("submit_assistant_turn", js_args).await?;
+    js_value
+        .into_serde()
+        .map_err(|err| format!("Deserialize error: {err}"))
+}
+
+pub async fn apply_narrative_suggestion(
+    action: NarrativeSuggestionActionDto,
+) -> Result<AssistantTurnDto, String> {
+    let payload = serde_json::json!({ "request": { "action": action } });
+    let js_args = JsValue::from_serde(&payload)
+        .map_err(|err| format!("JsValue conversion error: {err}"))?;
+    let js_value = invoke_tauri("apply_narrative_suggestion", js_args).await?;
     js_value
         .into_serde()
         .map_err(|err| format!("Deserialize error: {err}"))

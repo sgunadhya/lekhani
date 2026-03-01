@@ -1,6 +1,7 @@
 use crate::api::dto::{
-    AssistantIntentDto, AssistantTurnDto, LlmStatusDto, NarrativeCommitTargetDto, NarrativeNudgeDto,
-    NarrativeSnapshotDto, PreviewNarrativeInputDto, SyncDebugDto, WorkingMemoryDto,
+    AssistantIntentDto, AssistantTurnDto, LlmStatusDto, NarrativeCommitTargetDto,
+    NarrativeNudgeDto, NarrativeSnapshotDto, NarrativeSuggestedActionViewDto,
+    NarrativeSuggestionActionDto, PreviewNarrativeInputDto, SyncDebugDto, WorkingMemoryDto,
 };
 use crate::api::tauri;
 use leptos::*;
@@ -24,6 +25,7 @@ pub struct NarrativeChatContext {
     pub messages: RwSignal<Vec<ChatMessage>>,
     pub working_memory: RwSignal<Option<WorkingMemoryDto>>,
     pub last_intent: RwSignal<Option<AssistantIntentDto>>,
+    pub suggested_actions: RwSignal<Vec<NarrativeSuggestedActionViewDto>>,
 }
 
 impl NarrativeChatContext {
@@ -37,6 +39,7 @@ impl NarrativeChatContext {
             }]),
             working_memory: create_rw_signal(None),
             last_intent: create_rw_signal(None),
+            suggested_actions: create_rw_signal(Vec::new()),
         }
     }
 }
@@ -97,6 +100,13 @@ pub fn create_turn_action() -> Action<String, Result<AssistantTurnDto, String>> 
     create_action(|prompt: &String| {
         let prompt = prompt.clone();
         async move { tauri::submit_assistant_turn(prompt).await }
+    })
+}
+
+pub fn create_suggestion_action() -> Action<NarrativeSuggestionActionDto, Result<AssistantTurnDto, String>> {
+    create_action(|action: &NarrativeSuggestionActionDto| {
+        let action = action.clone();
+        async move { tauri::apply_narrative_suggestion(action).await }
     })
 }
 

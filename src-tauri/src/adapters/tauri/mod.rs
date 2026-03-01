@@ -4,6 +4,7 @@ pub mod mapping;
 pub mod state;
 
 pub use commands::{
+    apply_narrative_suggestion,
     commit_narrative_input, export_fountain_document, get_active_screenplay,
     get_current_project, get_llm_status, get_narrative_snapshot, get_nudge, get_screenplays,
     get_sync_debug, get_working_memory,

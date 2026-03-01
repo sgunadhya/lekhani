@@ -13,7 +13,8 @@ use crate::domain::{
     Screenplay, StoryTask, SyncActionKind, SyncRun, SyncTargetKind, WorkingMemory,
 };
 
-pub use narrative::{preview_turn, submit_turn, NarrativeTurnOutcome};
+pub use crate::application::NarrativeTurnOutcome;
+pub use narrative::{apply_suggestion_action, preview_turn, submit_turn};
 pub use sync::{get_debug_state, SyncDebugState};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

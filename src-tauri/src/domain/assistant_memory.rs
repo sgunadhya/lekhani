@@ -49,6 +49,21 @@ pub enum ConversationTopic {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub enum NarrativeSuggestionAction {
+    UseThis,
+    TryAnother,
+    ExpandThis,
+    AddToScreenplay,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NarrativeSuggestedAction {
+    pub action: NarrativeSuggestionAction,
+    pub label: String,
+    pub primary: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum FocusKind {
     Character,
     Event,

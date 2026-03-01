@@ -1,10 +1,12 @@
 use crate::api::dto::{
-    AssistantIntentDto, ConstraintScopeDto, FocusKindDto, NarrativeChangeKindDto,
+    AssistantIntentDto, ConstraintScopeDto, ConversationModeDto, ConversationTopicDto,
+    FocusKindDto, NarrativeChangeKindDto, NarrativeSuggestedActionViewDto,
+    NarrativeSuggestionActionDto,
     NarrativeCommitTargetDto, PreviewNarrativeInputDto, TaskStatusDto, WorkingMemoryDto,
 };
 use crate::state::document::DocumentContext;
 use crate::state::narrative::{
-    create_llm_status_resource, create_nudge_resource, create_preview_resource,
+    create_llm_status_resource, create_nudge_resource, create_preview_resource, create_suggestion_action,
     create_turn_action, ChatMessage, ChatRole, NarrativeChatContext,
 };
 use gloo_timers::callback::Timeout;
@@ -24,8 +26,8 @@ pub fn ChatInterface() -> impl IntoView {
     let nudge = create_nudge_resource(nudge_nonce);
     let preview = create_preview_resource(debounced_prompt);
     let turn_action = create_turn_action();
+    let suggestion_action = create_suggestion_action();
     let debounce_handle: Rc<RefCell<Option<Timeout>>> = Rc::new(RefCell::new(None));
-
     Effect::new({
         let debounce_handle = debounce_handle.clone();
         move |_| {
@@ -66,53 +68,70 @@ pub fn ChatInterface() -> impl IntoView {
         turn_action.dispatch(message);
     };
 
-    Effect::new(move |_| {
-        if let Some(Ok(turn)) = turn_action.value().get() {
-            set_nudge_nonce.update(|value| *value += 1);
-            chat.working_memory.set(Some(turn.working_memory.clone()));
-            chat.last_intent.set(Some(turn.intent.clone()));
-            let committed = turn.committed;
-            let prompt = committed.prompt.trim().to_string();
-            if !prompt.is_empty() && turn.intent == AssistantIntentDto::MutateOntology {
+    let apply_turn = move |turn: crate::api::dto::AssistantTurnDto| {
+        set_nudge_nonce.update(|value| *value += 1);
+        chat.working_memory.set(Some(turn.working_memory.clone()));
+        chat.last_intent.set(Some(turn.intent.clone()));
+        chat.suggested_actions.set(turn.suggested_actions.clone());
+        let committed = turn.committed;
+        let prompt = committed.prompt.trim().to_string();
+        if !prompt.is_empty() && turn.intent == AssistantIntentDto::MutateOntology {
+            document.document.update(|current| {
+                if let Some(current) = current {
+                    if !current.fountain_text.trim().is_empty() {
+                        current.fountain_text.push_str("\n\n");
+                    }
+                    current
+                        .fountain_text
+                        .push_str(&format!("[[Narrative note: {}]]", prompt));
+                }
+            });
+        } else if turn.intent == AssistantIntentDto::MutateDocument {
+            let draft_text = turn.reply_body.trim().to_string();
+            if !draft_text.is_empty() {
                 document.document.update(|current| {
                     if let Some(current) = current {
                         if !current.fountain_text.trim().is_empty() {
                             current.fountain_text.push_str("\n\n");
                         }
-                        current
-                            .fountain_text
-                            .push_str(&format!("[[Narrative note: {}]]", prompt));
+                        current.fountain_text.push_str(&draft_text);
                     }
                 });
-            } else if turn.intent == AssistantIntentDto::MutateDocument {
-                let draft_text = turn.reply_body.trim().to_string();
-                if !draft_text.is_empty() {
-                    document.document.update(|current| {
-                        if let Some(current) = current {
-                            if !current.fountain_text.trim().is_empty() {
-                                current.fountain_text.push_str("\n\n");
-                            }
-                            current.fountain_text.push_str(&draft_text);
-                        }
-                    });
-                }
             }
+        }
 
-            chat.messages.update(|items| {
-                items.push(ChatMessage {
-                    role: ChatRole::Assistant,
-                    title: Some(match turn.intent {
-                        AssistantIntentDto::Query => format!("{} · Query", turn.reply_title),
-                        AssistantIntentDto::Guide => format!("{} · Guidance", turn.reply_title),
-                        AssistantIntentDto::Clarify => format!("{} · Clarify", turn.reply_title),
-                        AssistantIntentDto::MutateOntology => turn.reply_title,
-                        AssistantIntentDto::MutateDocument => format!("{} · Document", turn.reply_title),
-                        AssistantIntentDto::ProposeSync => format!("{} · Sync", turn.reply_title),
-                        AssistantIntentDto::ResolveLint => format!("{} · Lint", turn.reply_title),
-                    }),
-                    body: turn.reply_body,
-                });
+        chat.messages.update(|items| {
+            items.push(ChatMessage {
+                role: ChatRole::Assistant,
+                title: Some(match turn.intent {
+                    AssistantIntentDto::Query => format!("{} · Query", turn.reply_title),
+                    AssistantIntentDto::Guide => format!("{} · Guidance", turn.reply_title),
+                    AssistantIntentDto::Clarify => format!("{} · Clarify", turn.reply_title),
+                    AssistantIntentDto::MutateOntology => turn.reply_title,
+                    AssistantIntentDto::MutateDocument => format!("{} · Document", turn.reply_title),
+                    AssistantIntentDto::ProposeSync => format!("{} · Sync", turn.reply_title),
+                    AssistantIntentDto::ResolveLint => format!("{} · Lint", turn.reply_title),
+                }),
+                body: turn.reply_body,
             });
+        });
+    };
+
+    Effect::new({
+        let apply_turn = apply_turn.clone();
+        move |_| {
+            if let Some(Ok(turn)) = turn_action.value().get() {
+                apply_turn(turn);
+            }
+        }
+    });
+
+    Effect::new({
+        let apply_turn = apply_turn.clone();
+        move |_| {
+            if let Some(Ok(turn)) = suggestion_action.value().get() {
+                apply_turn(turn);
+            }
         }
     });
 
@@ -159,6 +178,23 @@ pub fn ChatInterface() -> impl IntoView {
                 }}
             </div>
 
+            {move || {
+                let actions = chat.suggested_actions.get();
+                if actions.is_empty() {
+                    view! { <div></div> }.into_view()
+                } else {
+                    view! {
+                        <div class="narrative-suggestion-row">
+                            {actions
+                                .into_iter()
+                                .map(|action| render_suggested_action(action, suggestion_action))
+                                .collect_view()}
+                        </div>
+                    }
+                        .into_view()
+                }
+            }}
+
             <div class="narrative-nudge-strip">
                 <span class="eyebrow">"Next nudge"</span>
                 {move || match nudge.get() {
@@ -190,7 +226,7 @@ pub fn ChatInterface() -> impl IntoView {
                         })
                         .collect_view()
                 }}
-                {move || if turn_action.pending().get() {
+                {move || if turn_action.pending().get() || suggestion_action.pending().get() {
                     view! {
                         <div class="chat-message chat-message-assistant processing-indicator">
                             <span class="chat-message-title">"Lekhani is thinking..."</span>
@@ -262,6 +298,25 @@ fn summarize_preview(preview: &PreviewNarrativeInputDto) -> String {
         .join(" ")
 }
 
+fn render_suggested_action(
+    action: NarrativeSuggestedActionViewDto,
+    suggestion_action: Action<NarrativeSuggestionActionDto, Result<crate::api::dto::AssistantTurnDto, String>>,
+) -> impl IntoView {
+    let button_class = if action.primary {
+        "primary-button"
+    } else {
+        "secondary-button"
+    };
+    let button_action = action.action.clone();
+    let label = action.label.clone();
+
+    view! {
+        <button class=button_class on:click=move |_| suggestion_action.dispatch(button_action.clone())>
+            {label}
+        </button>
+    }
+}
+
 fn render_working_memory(memory: &WorkingMemoryDto) -> impl IntoView {
     let current_thread = current_thread_label(memory);
     let anchor = memory.current_focus.as_ref().map(|focus| focus.summary.clone());
@@ -289,6 +344,7 @@ fn render_working_memory(memory: &WorkingMemoryDto) -> impl IntoView {
             <section class="narrative-context-panel">
                 <span class="eyebrow">"Current thread"</span>
                 <p class="narrative-context-value">{current_thread}</p>
+                <p class="muted narrative-context-note">{conversation_mode_label(&memory.conversation_mode)}</p>
             </section>
 
             {anchor.map(|anchor| {
@@ -331,6 +387,14 @@ fn render_working_memory(memory: &WorkingMemoryDto) -> impl IntoView {
 }
 
 fn current_thread_label(memory: &WorkingMemoryDto) -> String {
+    match memory.conversation_topic {
+        ConversationTopicDto::Setting => return "Setting".to_string(),
+        ConversationTopicDto::Character => return "Character".to_string(),
+        ConversationTopicDto::Event => return "Event".to_string(),
+        ConversationTopicDto::Relationship => return "Relationship".to_string(),
+        ConversationTopicDto::General => {}
+    }
+
     if let Some(focus) = &memory.current_focus {
         return match focus.kind {
             FocusKindDto::Character => "Character".to_string(),
@@ -356,6 +420,14 @@ fn current_thread_label(memory: &WorkingMemoryDto) -> String {
     }
 
     "Story".to_string()
+}
+
+fn conversation_mode_label(mode: &ConversationModeDto) -> &'static str {
+    match mode {
+        ConversationModeDto::Brainstorming => "Exploring ideas",
+        ConversationModeDto::Refining => "Refining the current idea",
+        ConversationModeDto::Committing => "Recording the current direction",
+    }
 }
 
 fn render_markdown(text: &str) -> impl IntoView {
