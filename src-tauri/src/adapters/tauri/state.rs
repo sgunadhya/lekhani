@@ -330,6 +330,24 @@ impl AppState {
         Ok(snapshot)
     }
 
+    pub fn clear_narrative_state(&self) -> Result<(), String> {
+        self.narrative_repository
+            .clear_all()
+            .map_err(|err| err.to_string())?;
+
+        if let Some(repository) = self.sqlite_repository.as_ref() {
+            repository
+                .save_working_memory(WorkingMemory {
+                    project_id: "current-project".to_string(),
+                    session_id: "main".to_string(),
+                    ..WorkingMemory::default()
+                })
+                .map_err(|err| err.to_string())?;
+        }
+
+        Ok(())
+    }
+
     pub fn store_relationship(&self, relationship: OntologyRelationship) -> Result<(), String> {
         self.narrative_repository
             .save_relationship(relationship)

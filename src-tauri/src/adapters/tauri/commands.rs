@@ -349,6 +349,12 @@ pub fn get_narrative_snapshot(state: State<'_, AppState>) -> Result<NarrativeSna
     state.get_snapshot()
 }
 
+#[tauri::command]
+pub fn clear_narrative_state(state: State<'_, AppState>) -> Result<(), String> {
+    state.clear_narrative_state()?;
+    Ok::<(), String>(())
+}
+
 fn resolve_dialog_path(file_path: tauri_plugin_dialog::FilePath) -> Option<PathBuf> {
     match file_path {
         tauri_plugin_dialog::FilePath::Path(path) => Some(path),

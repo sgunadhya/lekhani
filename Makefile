@@ -1,6 +1,6 @@
 # Lekhani - Screenplay Writing Tool
 
-.PHONY: help run dev build launch clean kill fmt lint test check quick-test frontend-build frontend-serve screenshots motion
+.PHONY: help run dev lmstudio deepseek openai build launch clean kill fmt lint test check quick-test frontend-build frontend-serve screenshots motion
 
 TAURI_DIR := src-tauri
 FRONTEND_DIR := frontend
@@ -9,6 +9,15 @@ CARGO_TAURI := cargo tauri
 TRUNK := trunk
 TRUNK_PORT := 3000
 APP_BUNDLE := target/release/bundle/macos/Lekhani.app
+LMSTUDIO_BASE_URL ?= http://127.0.0.1:1234/v1
+LMSTUDIO_MODEL ?= nvidia/nemotron-3-nano
+LMSTUDIO_TIMEOUT_SECS ?= 30
+DEEPSEEK_BASE_URL ?= https://api.deepseek.com/v1
+DEEPSEEK_MODEL ?= deepseek-chat
+DEEPSEEK_TIMEOUT_SECS ?= 30
+OPENAI_BASE_URL ?= https://api.openai.com/v1
+OPENAI_MODEL ?= gpt-4.1-mini
+OPENAI_TIMEOUT_SECS ?= 30
 
 RED := \033[0;31m
 GREEN := \033[0;32m
@@ -21,6 +30,9 @@ help:
 	@echo ""
 	@echo "$(YELLOW)Available targets:$(NC)"
 	@echo "  $(GREEN)make dev$(NC)            - Start Tauri dev mode with the Leptos frontend"
+	@echo "  $(GREEN)make lmstudio$(NC)       - Start Tauri dev mode against LM Studio"
+	@echo "  $(GREEN)make deepseek$(NC)       - Start Tauri dev mode against DeepSeek"
+	@echo "  $(GREEN)make openai$(NC)         - Start Tauri dev mode against OpenAI"
 	@echo "  $(GREEN)make run$(NC)            - Alias for dev"
 	@echo "  $(GREEN)make build$(NC)          - Build the production app bundle"
 	@echo "  $(GREEN)make launch$(NC)         - Rebuild and launch the macOS app bundle"
@@ -41,6 +53,18 @@ run: dev
 dev: kill check
 	@echo "$(BLUE)Starting Lekhani development server (Tauri + Leptos)...$(NC)"
 	@cd $(TAURI_DIR) && $(CARGO_TAURI) dev
+
+lmstudio: kill check
+	@echo "$(BLUE)Starting Lekhani with LM Studio ($(LMSTUDIO_MODEL))...$(NC)"
+	@cd $(TAURI_DIR) && env LEKHANI_LLM_PROVIDER=lmstudio LEKHANI_LMSTUDIO_BASE_URL="$(LMSTUDIO_BASE_URL)" LEKHANI_LMSTUDIO_MODEL="$(LMSTUDIO_MODEL)" LEKHANI_LMSTUDIO_TIMEOUT_SECS="$(LMSTUDIO_TIMEOUT_SECS)" $(CARGO_TAURI) dev
+
+deepseek: kill check
+	@echo "$(BLUE)Starting Lekhani with DeepSeek ($(DEEPSEEK_MODEL))...$(NC)"
+	@cd $(TAURI_DIR) && env LEKHANI_LLM_PROVIDER=deepseek LEKHANI_OPENAI_BASE_URL="$(DEEPSEEK_BASE_URL)" LEKHANI_OPENAI_MODEL="$(DEEPSEEK_MODEL)" LEKHANI_OPENAI_TIMEOUT_SECS="$(DEEPSEEK_TIMEOUT_SECS)" LEKHANI_OPENAI_API_KEY="$(DEEPSEEK_API_KEY)" $(CARGO_TAURI) dev
+
+openai: kill check
+	@echo "$(BLUE)Starting Lekhani with OpenAI ($(OPENAI_MODEL))...$(NC)"
+	@cd $(TAURI_DIR) && env LEKHANI_LLM_PROVIDER=openai LEKHANI_OPENAI_BASE_URL="$(OPENAI_BASE_URL)" LEKHANI_OPENAI_MODEL="$(OPENAI_MODEL)" LEKHANI_OPENAI_TIMEOUT_SECS="$(OPENAI_TIMEOUT_SECS)" LEKHANI_OPENAI_API_KEY="$(OPENAI_API_KEY)" $(CARGO_TAURI) dev
 
 build: check frontend-build
 	@echo "$(BLUE)Building Lekhani for production...$(NC)"

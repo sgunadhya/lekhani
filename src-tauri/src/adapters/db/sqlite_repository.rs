@@ -870,6 +870,38 @@ impl NarrativeRepository for SqliteScreenplayRepository {
             ontology_graph,
         })
     }
+
+    fn clear_all(&self) -> Result<(), AppError> {
+        let mut connection = self.connection()?;
+        let transaction = connection
+            .transaction()
+            .map_err(|_| AppError::StatePoisoned("failed to start narrative reset transaction"))?;
+
+        transaction
+            .execute("DELETE FROM narrative_event_participants", [])
+            .map_err(|_| AppError::StatePoisoned("failed to clear event participants"))?;
+        transaction
+            .execute("DELETE FROM narrative_projection_links", [])
+            .map_err(|_| AppError::StatePoisoned("failed to clear projection links"))?;
+        transaction
+            .execute("DELETE FROM ontology_relationships", [])
+            .map_err(|_| AppError::StatePoisoned("failed to clear ontology relationships"))?;
+        transaction
+            .execute("DELETE FROM narrative_events", [])
+            .map_err(|_| AppError::StatePoisoned("failed to clear narrative events"))?;
+        transaction
+            .execute("DELETE FROM narrative_characters", [])
+            .map_err(|_| AppError::StatePoisoned("failed to clear narrative characters"))?;
+        transaction
+            .execute("DELETE FROM ontology_entities", [])
+            .map_err(|_| AppError::StatePoisoned("failed to clear ontology entities"))?;
+
+        transaction
+            .commit()
+            .map_err(|_| AppError::StatePoisoned("failed to commit narrative reset"))?;
+
+        Ok(())
+    }
 }
 
 impl SyncRunRepository for SqliteScreenplayRepository {

@@ -162,4 +162,13 @@ impl NarrativeRepository for MemoryNarrativeRepository {
             .map(|snapshot| snapshot.clone())
             .map_err(|_| AppError::StatePoisoned("narrative store lock poisoned"))
     }
+
+    fn clear_all(&self) -> Result<(), AppError> {
+        let mut snapshot = self
+            .snapshot
+            .lock()
+            .map_err(|_| AppError::StatePoisoned("narrative store lock poisoned"))?;
+        *snapshot = NarrativeSnapshot::default();
+        Ok(())
+    }
 }

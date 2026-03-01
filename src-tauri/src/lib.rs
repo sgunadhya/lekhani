@@ -8,13 +8,16 @@ use adapters::db::{
 };
 #[cfg(target_os = "macos")]
 use adapters::llm::FmRsNarrativeEngine;
-use adapters::llm::StubNarrativeEngine;
+use adapters::llm::{
+    LmStudioNarrativeEngine, OpenAiCompatibleNarrativeEngine, StubNarrativeEngine,
+};
 use application::{
     HeuristicAssistantCapabilityPlanner, HeuristicAssistantFallbackResponder,
     HeuristicBeliefStateUpdater, HeuristicMutationGate, HeuristicResponseStateFinalizer,
 };
 use adapters::tauri::{
     apply_narrative_suggestion,
+    clear_narrative_state,
     commit_narrative_input, export_fountain_document, get_active_screenplay,
     get_current_project, get_llm_status, get_narrative_snapshot, get_nudge, get_screenplays,
     get_sync_debug, get_working_memory,
@@ -131,6 +134,7 @@ pub fn run() {
             get_active_screenplay,
             get_current_project,
             get_narrative_snapshot,
+            clear_narrative_state,
             get_screenplays,
             save_screenplay,
             import_fountain_document,
@@ -186,6 +190,14 @@ pub fn run() {
 }
 
 fn narrative_provider() -> Box<dyn ports::NarrativeProvider> {
+    if let Ok(engine) = OpenAiCompatibleNarrativeEngine::new_from_env() {
+        return Box::new(engine);
+    }
+
+    if let Ok(engine) = LmStudioNarrativeEngine::new_from_env() {
+        return Box::new(engine);
+    }
+
     #[cfg(target_os = "macos")]
     if let Ok(engine) = FmRsNarrativeEngine::new() {
         return Box::new(engine);
@@ -286,6 +298,14 @@ fn startup_project_path() -> Option<std::path::PathBuf> {
 }
 
 fn narrative_character_parser() -> Box<dyn ports::CharacterParser> {
+    if let Ok(engine) = OpenAiCompatibleNarrativeEngine::new_from_env() {
+        return Box::new(engine);
+    }
+
+    if let Ok(engine) = LmStudioNarrativeEngine::new_from_env() {
+        return Box::new(engine);
+    }
+
     #[cfg(target_os = "macos")]
     if let Ok(engine) = FmRsNarrativeEngine::new() {
         return Box::new(engine);
@@ -295,6 +315,14 @@ fn narrative_character_parser() -> Box<dyn ports::CharacterParser> {
 }
 
 fn narrative_event_parser() -> Box<dyn ports::EventParser> {
+    if let Ok(engine) = OpenAiCompatibleNarrativeEngine::new_from_env() {
+        return Box::new(engine);
+    }
+
+    if let Ok(engine) = LmStudioNarrativeEngine::new_from_env() {
+        return Box::new(engine);
+    }
+
     #[cfg(target_os = "macos")]
     if let Ok(engine) = FmRsNarrativeEngine::new() {
         return Box::new(engine);
@@ -304,6 +332,14 @@ fn narrative_event_parser() -> Box<dyn ports::EventParser> {
 }
 
 fn narrative_nudge_generator() -> Box<dyn ports::NudgeGenerator> {
+    if let Ok(engine) = OpenAiCompatibleNarrativeEngine::new_from_env() {
+        return Box::new(engine);
+    }
+
+    if let Ok(engine) = LmStudioNarrativeEngine::new_from_env() {
+        return Box::new(engine);
+    }
+
     #[cfg(target_os = "macos")]
     if let Ok(engine) = FmRsNarrativeEngine::new() {
         return Box::new(engine);
@@ -313,6 +349,24 @@ fn narrative_nudge_generator() -> Box<dyn ports::NudgeGenerator> {
 }
 
 fn narrative_backend_status() -> (String, String) {
+    if let Ok(engine) = OpenAiCompatibleNarrativeEngine::new_from_env() {
+        let provider = engine.provider_label().to_string();
+        let detail = match provider.as_str() {
+            "deepseek" => "DeepSeek is available via the OpenAI-compatible cloud endpoint.",
+            "openai" => "OpenAI is available via the cloud endpoint.",
+            _ => "An OpenAI-compatible cloud provider is available.",
+        };
+        return (provider, detail.to_string());
+    }
+
+    if let Ok(engine) = LmStudioNarrativeEngine::new_from_env() {
+        let _ = engine;
+        return (
+            "lmstudio".to_string(),
+            "LM Studio is available via the local OpenAI-compatible endpoint.".to_string(),
+        );
+    }
+
     #[cfg(target_os = "macos")]
     if FmRsNarrativeEngine::new().is_ok() {
         return (

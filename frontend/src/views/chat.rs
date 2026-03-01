@@ -1,18 +1,14 @@
 use crate::api::dto::{
     AssistantIntentDto, ConstraintScopeDto, ConversationModeDto, ConversationTopicDto,
-    FocusKindDto, NarrativeChangeKindDto, NarrativeSuggestedActionViewDto,
-    NarrativeSuggestionActionDto,
-    NarrativeCommitTargetDto, PreviewNarrativeInputDto, TaskStatusDto, WorkingMemoryDto,
+    FocusKindDto, NarrativeSuggestedActionViewDto, NarrativeSuggestionActionDto, TaskStatusDto,
+    WorkingMemoryDto,
 };
 use crate::state::document::DocumentContext;
 use crate::state::narrative::{
-    create_llm_status_resource, create_nudge_resource, create_preview_resource, create_suggestion_action,
+    create_llm_status_resource, create_nudge_resource, create_suggestion_action,
     create_turn_action, ChatMessage, ChatRole, NarrativeChatContext,
 };
-use gloo_timers::callback::Timeout;
 use leptos::*;
-use std::cell::RefCell;
-use std::rc::Rc;
 
 #[component]
 pub fn ChatInterface() -> impl IntoView {
@@ -20,34 +16,11 @@ pub fn ChatInterface() -> impl IntoView {
     let chat = use_context::<NarrativeChatContext>().expect("narrative chat context should exist");
     let prompt = Signal::derive(move || chat.prompt.get());
     let set_prompt = move |value: String| chat.prompt.set(value);
-    let (debounced_prompt, set_debounced_prompt) = create_signal(String::new());
     let (nudge_nonce, set_nudge_nonce) = create_signal(0_u64);
     let llm_status = create_llm_status_resource();
     let nudge = create_nudge_resource(nudge_nonce);
-    let preview = create_preview_resource(debounced_prompt);
     let turn_action = create_turn_action();
     let suggestion_action = create_suggestion_action();
-    let debounce_handle: Rc<RefCell<Option<Timeout>>> = Rc::new(RefCell::new(None));
-    Effect::new({
-        let debounce_handle = debounce_handle.clone();
-        move |_| {
-            let next_prompt = prompt.get();
-
-            if let Some(timeout) = debounce_handle.borrow_mut().take() {
-                timeout.cancel();
-            }
-
-            if next_prompt.trim().is_empty() {
-                set_debounced_prompt.set(String::new());
-                return;
-            }
-
-            let set_debounced_prompt = set_debounced_prompt;
-            *debounce_handle.borrow_mut() = Some(Timeout::new(300, move || {
-                set_debounced_prompt.set(next_prompt.clone());
-            }));
-        }
-    });
 
     let send_message = move |_| {
         let current_prompt = prompt.get_untracked();
@@ -64,7 +37,6 @@ pub fn ChatInterface() -> impl IntoView {
             });
         });
         chat.prompt.set(String::new());
-        set_debounced_prompt.set(String::new());
         turn_action.dispatch(message);
     };
 
@@ -249,23 +221,9 @@ pub fn ChatInterface() -> impl IntoView {
                 />
 
                 <div class="chat-draft-status">
-                    {move || match preview.get() {
-                        None => view! { <p class="muted">"Start typing to see how Lekhani is reading the message."</p> }.into_view(),
-                        Some(Ok(preview)) if preview.changes.is_empty() => view! {
-                            <p class="muted">"No inferred change yet."</p>
-                        }.into_view(),
-                        Some(Ok(preview)) => view! {
-                            <div class="draft-readout">
-                                <span class="eyebrow">"Current read"</span>
-                                <strong>{match preview.suggested_target {
-                                    NarrativeCommitTargetDto::Character => "Character",
-                                    NarrativeCommitTargetDto::Event => "Event",
-                                }}</strong>
-                                <p>{summarize_preview(&preview)}</p>
-                            </div>
-                        }.into_view(),
-                        Some(Err(err)) => view! { <p class="error">{err}</p> }.into_view(),
-                    }}
+                    <p class="muted">
+                        "Typing stays local. Nothing is inferred or committed until you send a message or choose a suggestion."
+                    </p>
                     <button class="primary-button" on:click=send_message>
                         "Send"
                     </button>
@@ -273,29 +231,6 @@ pub fn ChatInterface() -> impl IntoView {
             </div>
         </section>
     }
-}
-
-fn summarize_preview(preview: &PreviewNarrativeInputDto) -> String {
-    if preview.changes.is_empty() {
-        return "No inferred change yet.".to_string();
-    }
-
-    preview
-        .changes
-        .iter()
-        .map(|change| {
-            let label = match change.kind {
-                NarrativeChangeKindDto::AddCharacter => "Add character",
-                NarrativeChangeKindDto::UpdateCharacter => "Update character",
-                NarrativeChangeKindDto::AddEvent => "Add event",
-                NarrativeChangeKindDto::UpdateEvent => "Update event",
-                NarrativeChangeKindDto::AddRelationship => "Add relationship",
-                NarrativeChangeKindDto::UpdateRelationship => "Update relationship",
-            };
-            format!("{label}: {}.", change.label)
-        })
-        .collect::<Vec<_>>()
-        .join(" ")
 }
 
 fn render_suggested_action(
