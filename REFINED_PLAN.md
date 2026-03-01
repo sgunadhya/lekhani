@@ -158,6 +158,95 @@ Current implementation note:
 - `resolve_finding`
 - `dismiss_finding`
 
+## Dialogue-State Pattern
+
+Narrative chat should follow a standard dialogue-state architecture instead of ad hoc prompt handling.
+
+Canonical turn pipeline:
+
+1. `classify`
+   - determine the dialogue act for the user turn
+
+2. `update_state`
+   - update working memory / belief state before any tool execution
+
+3. `plan`
+   - derive capabilities and write policy from dialogue act plus state
+
+4. `execute`
+   - expose only the MCP tools allowed by the plan
+
+5. `respond`
+   - generate the assistant reply from state, tool observations, and plan outcome
+
+### Dialogue Acts
+
+The assistant should classify turns into stable dialogue acts such as:
+
+- `query`
+- `brainstorm`
+- `constraint`
+- `correction`
+- `confirmation`
+- `commit`
+- `rewrite_request`
+
+These are conceptually separate from ontology/document mutations.
+
+### Belief State
+
+Working memory should act as a lightweight belief state, not just a bag of notes.
+
+It should track:
+
+- current focus
+- active constraints
+- open questions
+- pinned decisions
+- active assumptions
+- recent corrections
+- story backlog / tasks
+
+Important rule:
+
+- rejection and correction turns update belief state first
+- they do not directly mutate ontology truth
+
+### Policy
+
+The planner should map dialogue act + belief state to one of:
+
+- `NoWrite`
+- `CandidateOnly`
+- `SafeCommit`
+
+And to a bounded capability set:
+
+- `UnderstandTurn`
+- `InspectProjectState`
+- `ExtractStructure`
+- `CommitStructure`
+- `ProposeDocumentChange`
+- `InspectAlignment`
+- `ResolveAmbiguity`
+- `GuideNextStep`
+- `ResolveLint`
+
+### MCP Execution Rule
+
+The assistant should not see every tool on every turn.
+
+Each turn must expose only the tool surface allowed by the policy for that turn.
+
+### Fallback Rule
+
+If the model fails or returns invalid output:
+
+- do not fall back to canned generic error text
+- generate a local response from dialogue act, belief state, preview, and write policy
+
+This preserves conversational continuity without bypassing the control model.
+
 ## User-Facing Failure Modes
 
 These should shape the implementation.

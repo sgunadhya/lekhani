@@ -4,10 +4,12 @@ pub mod screenplay_service;
 pub mod sync_coordinator;
 
 pub use assistant_turn::{
-    AssistantCapabilityPlanner, AssistantFallbackResponder, AssistantIntentClassifier,
-    AssistantIntentContext, CapabilityPlan, CapabilityPlanningContext,
+    AssistantCapabilityPlanner, AssistantFallbackResponder, AssistantIntentContext,
+    BeliefStateUpdater, CapabilityPlan, CapabilityPlanningContext, DialogueAct,
+    DialogueActClassifier, DialogueActContext, DialogueStateContext, DialogueStateUpdate,
     HeuristicAssistantCapabilityPlanner, HeuristicAssistantFallbackResponder,
-    HeuristicAssistantIntentClassifier, HeuristicMutationGate, MutationGate,
+    HeuristicBeliefStateUpdater, HeuristicMutationGate, NeutralDialogueActClassifier,
+    HeuristicResponseStateFinalizer, MutationGate, ResponseStateFinalizer,
 };
 pub use narrative_service::NarrativeService;
 pub use screenplay_service::ScreenplayService;

@@ -11,7 +11,8 @@ use adapters::llm::FmRsNarrativeEngine;
 use adapters::llm::StubNarrativeEngine;
 use application::{
     HeuristicAssistantCapabilityPlanner, HeuristicAssistantFallbackResponder,
-    HeuristicAssistantIntentClassifier, HeuristicMutationGate,
+    HeuristicBeliefStateUpdater, HeuristicMutationGate, NeutralDialogueActClassifier,
+    HeuristicResponseStateFinalizer,
 };
 use adapters::tauri::{
     commit_narrative_input, export_fountain_document, get_active_screenplay,
@@ -101,9 +102,11 @@ pub fn run() {
                 sqlite_repository,
                 llm_backend,
                 llm_detail,
-                Box::new(HeuristicAssistantIntentClassifier),
+                narrative_dialogue_classifier(),
+                Box::new(HeuristicBeliefStateUpdater),
                 Box::new(HeuristicAssistantCapabilityPlanner),
                 Box::new(HeuristicAssistantFallbackResponder),
+                Box::new(HeuristicResponseStateFinalizer),
                 Box::new(HeuristicMutationGate),
                 narrative_character_parser(),
                 narrative_event_parser(),
@@ -180,6 +183,15 @@ pub fn run() {
             }
             _ => {}
         });
+}
+
+fn narrative_dialogue_classifier() -> Box<dyn application::DialogueActClassifier> {
+    #[cfg(target_os = "macos")]
+    if let Ok(engine) = FmRsNarrativeEngine::new() {
+        return Box::new(engine);
+    }
+
+    Box::new(NeutralDialogueActClassifier)
 }
 
 fn build_app_menu<R: tauri::Runtime>(app: &tauri::App<R>) -> tauri::Result<tauri::menu::Menu<R>> {

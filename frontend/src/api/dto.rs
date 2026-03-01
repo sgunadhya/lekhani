@@ -176,6 +176,43 @@ pub struct RecentCorrectionDto {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub enum ConstraintScopeDto {
+    Setting,
+    Character,
+    Event,
+    Relationship,
+    Tone,
+    Structure,
+    General,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub enum ConstraintOperatorDto {
+    Avoid,
+    Prefer,
+    Require,
+    Forbid,
+    Correct,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub enum ConstraintStatusDto {
+    Active,
+    Satisfied,
+    Dismissed,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConstraintDto {
+    pub id: String,
+    pub scope: ConstraintScopeDto,
+    pub operator: ConstraintOperatorDto,
+    pub value: String,
+    pub source: String,
+    pub status: ConstraintStatusDto,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum TaskStatusDto {
     Open,
     InProgress,
@@ -218,6 +255,7 @@ pub struct WorkingMemoryDto {
     pub project_id: String,
     pub session_id: String,
     pub current_focus: Option<FocusItemDto>,
+    pub constraints: Vec<ConstraintDto>,
     pub story_backlog: Vec<StoryTaskDto>,
     pub open_questions: Vec<OpenQuestionDto>,
     pub pinned_decisions: Vec<PinnedDecisionDto>,

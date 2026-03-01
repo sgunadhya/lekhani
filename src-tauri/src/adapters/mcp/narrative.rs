@@ -1,10 +1,16 @@
 use crate::adapters::tauri::state::AppState;
-use crate::application::{AssistantIntentContext, CapabilityPlanningContext};
-use crate::domain::{
-    AssistantCapability, AssistantIntent, NarrativeMessagePreview, SyncRun, WorkingMemory,
-    WritePolicy,
+use crate::application::{
+    AssistantIntentContext, CapabilityPlanningContext, DialogueAct, DialogueActContext,
+    DialogueStateContext,
 };
-use crate::ports::{AssistantResponse, AssistantToolCall, WorkingMemoryRepository};
+use crate::domain::{
+    AssistantCapability, AssistantIntent, ConversationMode, ConversationTopic,
+    NarrativeCommitTarget, NarrativeMessagePreview, OntologyEntity, OntologyEntityKind,
+    WorkingMemory, WritePolicy,
+};
+use crate::ports::{
+    AssistantResponse, FollowUpDirective, WorkingMemoryRepository,
+};
 
 use super::{execute_tool, McpToolCall, McpToolResult};
 
@@ -34,191 +40,407 @@ pub fn submit_turn(state: &AppState, prompt: &str) -> Result<NarrativeTurnOutcom
     }
 
     let mut working_memory = state.get_working_memory()?;
-    
-    // 1. Initial grounding check via existing control model
-    let initial_preview = preview_turn(state, &trimmed_prompt)?;
-    let intent = state.assistant_intent_classifier.classify(AssistantIntentContext {
+    let classification_preview = empty_preview(&trimmed_prompt);
+    let dialogue_act = state.dialogue_act_classifier.classify(DialogueActContext {
         prompt: &trimmed_prompt,
-        preview: &initial_preview,
+        preview: &classification_preview,
+        memory: &working_memory,
     });
+    let state_update = state.belief_state_updater.update(DialogueStateContext {
+        prompt: &trimmed_prompt,
+        preview: &classification_preview,
+        memory: &working_memory,
+        dialogue_act: &dialogue_act,
+    });
+    let prior_memory = working_memory.clone();
+    working_memory = state_update.working_memory;
+
+    if matches!(dialogue_act, DialogueAct::Confirmation)
+        && prior_memory.current_focus.is_some()
+    {
+        let plan = state.assistant_capability_planner.plan(CapabilityPlanningContext {
+            prompt: &trimmed_prompt,
+            preview: &classification_preview,
+            dialogue_act: &dialogue_act,
+            mutation_allowed: true,
+        });
+        return confirm_current_focus(state, &trimmed_prompt, prior_memory, working_memory, plan);
+    }
+
+    if !matches!(
+        dialogue_act,
+        DialogueAct::Confirmation | DialogueAct::Commit | DialogueAct::RewriteRequest
+    ) && prior_memory.current_focus.is_some()
+        && !matches!(prior_memory.conversation_mode, ConversationMode::Committing)
+    {
+        let plan = state.assistant_capability_planner.plan(CapabilityPlanningContext {
+            prompt: &trimmed_prompt,
+            preview: &classification_preview,
+            dialogue_act: &dialogue_act,
+            mutation_allowed: false,
+        });
+        let directive = state
+            .assistant_agent
+            .interpret_followup(&trimmed_prompt, &prior_memory)
+            .unwrap_or(FollowUpDirective::Unknown);
+
+        return match directive {
+            FollowUpDirective::ElaborateCurrent | FollowUpDirective::Unknown => {
+                working_memory.conversation_mode = ConversationMode::Refining;
+                respond_from_specialized_path(
+                    state,
+                    &trimmed_prompt,
+                    working_memory,
+                    plan,
+                    state
+                        .assistant_agent
+                        .elaborate_focus(&trimmed_prompt, &prior_memory)?,
+                    WritePolicy::NoWrite,
+                )
+            }
+            FollowUpDirective::AlternativeOption | FollowUpDirective::RejectCurrent => {
+                working_memory.conversation_mode = ConversationMode::Brainstorming;
+                working_memory.current_focus = None;
+                respond_from_specialized_path(
+                    state,
+                    &trimmed_prompt,
+                    working_memory,
+                    plan,
+                    state
+                        .assistant_agent
+                        .suggest_alternative(&trimmed_prompt, &prior_memory)?,
+                    WritePolicy::NoWrite,
+                )
+            }
+            FollowUpDirective::ConfirmCurrent => {
+                confirm_current_focus(state, &trimmed_prompt, prior_memory, working_memory, plan)
+            }
+            FollowUpDirective::ShiftToCharacter => {
+                working_memory.conversation_mode = ConversationMode::Brainstorming;
+                working_memory.conversation_topic = ConversationTopic::Character;
+                let response = state
+                    .assistant_agent
+                    .brainstorm_topic(&trimmed_prompt, &working_memory)?;
+                respond_from_specialized_path(
+                    state,
+                    &trimmed_prompt,
+                    working_memory,
+                    plan_for_topic_shift(AssistantIntent::Guide),
+                    response,
+                    WritePolicy::NoWrite,
+                )
+            }
+            FollowUpDirective::ShiftToEvent => {
+                working_memory.conversation_mode = ConversationMode::Brainstorming;
+                working_memory.conversation_topic = ConversationTopic::Event;
+                let response = state
+                    .assistant_agent
+                    .brainstorm_topic(&trimmed_prompt, &working_memory)?;
+                respond_from_specialized_path(
+                    state,
+                    &trimmed_prompt,
+                    working_memory,
+                    plan_for_topic_shift(AssistantIntent::Guide),
+                    response,
+                    WritePolicy::NoWrite,
+                )
+            }
+            FollowUpDirective::AddToScreenplay => {
+                working_memory.conversation_mode = ConversationMode::Committing;
+                respond_from_specialized_path(
+                    state,
+                    &trimmed_prompt,
+                    working_memory,
+                    plan_for_topic_shift(AssistantIntent::MutateDocument),
+                    state
+                        .assistant_agent
+                        .draft_from_focus(&trimmed_prompt, &prior_memory)?,
+                    WritePolicy::CandidateOnly,
+                )
+            }
+        };
+    }
+
+    if !matches!(dialogue_act, DialogueAct::Confirmation | DialogueAct::Commit | DialogueAct::RewriteRequest)
+        && prior_memory.current_focus.is_none()
+    {
+        let plan = state.assistant_capability_planner.plan(CapabilityPlanningContext {
+            prompt: &trimmed_prompt,
+            preview: &classification_preview,
+            dialogue_act: &DialogueAct::Brainstorm,
+            mutation_allowed: false,
+        });
+        working_memory.conversation_mode = ConversationMode::Brainstorming;
+        return respond_from_specialized_path(
+            state,
+            &trimmed_prompt,
+            working_memory,
+            plan,
+            state
+                .assistant_agent
+                .brainstorm_topic(&trimmed_prompt, &prior_memory)?,
+            WritePolicy::NoWrite,
+        );
+    }
+
+    if matches!(dialogue_act, DialogueAct::RewriteRequest) && prior_memory.current_focus.is_some() {
+        working_memory.conversation_mode = ConversationMode::Committing;
+        return respond_from_specialized_path(
+            state,
+            &trimmed_prompt,
+            working_memory,
+            plan_for_topic_shift(AssistantIntent::MutateDocument),
+            state
+                .assistant_agent
+                .draft_from_focus(&trimmed_prompt, &prior_memory)?,
+            WritePolicy::CandidateOnly,
+        );
+    }
+
+    let initial_preview = preview_turn(state, &trimmed_prompt)?;
     let mutation_allowed = state.mutation_gate.allow_mutation(AssistantIntentContext {
         prompt: &trimmed_prompt,
         preview: &initial_preview,
     });
-    let plan = state.assistant_capability_planner.plan(CapabilityPlanningContext {
+    let mut plan = state.assistant_capability_planner.plan(CapabilityPlanningContext {
         prompt: &trimmed_prompt,
         preview: &initial_preview,
-        intent,
+        dialogue_act: &dialogue_act,
         mutation_allowed,
     });
+    if state_update.force_no_write {
+        plan.write_policy = WritePolicy::NoWrite;
+    }
 
-    let screenplay = state
-        .screenplay_service
-        .get_active_screenplay()
-        .map_err(|err| err.to_string())?;
-    let mut sync_run = start_sync_run(
+    if matches!(plan.write_policy, WritePolicy::SafeCommit | WritePolicy::CandidateOnly) {
+        if propose_preview(state, &initial_preview)? {
+            working_memory = state.response_state_finalizer.finalize(
+                working_memory,
+                &trimmed_prompt,
+                &plan,
+                initial_preview
+                    .reply_title
+                    .as_deref()
+                    .unwrap_or("Story Direction"),
+                initial_preview
+                    .reply_body
+                    .as_deref()
+                    .unwrap_or("I recorded this as a structured proposal."),
+                None,
+            );
+            if let Some(repository) = state.sqlite_repository.as_ref() {
+                let _ = repository.save_working_memory(working_memory.clone());
+            }
+
+            return Ok(NarrativeTurnOutcome {
+                intent: plan.intent,
+                capabilities: plan.capabilities,
+                write_policy: WritePolicy::CandidateOnly,
+                reply_title: initial_preview
+                    .reply_title
+                    .clone()
+                    .unwrap_or_else(|| "Story Direction".to_string()),
+                reply_body: initial_preview.reply_body.clone().unwrap_or_else(|| {
+                    "I recorded this as a structured proposal.".to_string()
+                }),
+                committed: initial_preview,
+                working_memory,
+            });
+        }
+    }
+
+    let fallback = state.assistant_fallback_responder.respond(
+        &trimmed_prompt,
+        &initial_preview,
+        &working_memory,
+        &plan,
+    );
+    respond_from_specialized_path(
         state,
         &trimmed_prompt,
-        screenplay.version,
-        plan.write_policy.clone(),
-    )?;
+        working_memory,
+        plan,
+        fallback,
+        WritePolicy::NoWrite,
+    )
+}
 
-    let mut observations: Vec<(McpToolCall, McpToolResult)> = Vec::new();
-    let mut loop_count = 0;
-    let mut proposal_recorded = false;
-    const MAX_LOOPS: usize = 3;
+fn confirm_current_focus(
+    state: &AppState,
+    prompt: &str,
+    prior_memory: WorkingMemory,
+    mut working_memory: WorkingMemory,
+    plan: crate::application::CapabilityPlan,
+) -> Result<NarrativeTurnOutcome, String> {
+    let Some(focus) = prior_memory.current_focus.as_ref() else {
+        return Err("no active focus to confirm".to_string());
+    };
 
-    loop {
-        loop_count += 1;
-        
-        let response = state.assistant_agent.process_turn(
-            &trimmed_prompt,
-            &working_memory,
-            &observations,
-        );
-
-        let response = match response {
-            Ok(res) => res,
-            Err(_) => {
-                let fallback = state.assistant_fallback_responder.respond(
-                    &trimmed_prompt,
-                    &initial_preview,
-                    &working_memory,
-                    &plan,
-                );
-                finish_sync_run(state, &mut sync_run)?;
-                return match fallback {
-                    AssistantResponse::FinalReply { title, body, .. } => Ok(NarrativeTurnOutcome {
-                        intent: plan.intent,
-                        capabilities: plan.capabilities.clone(),
-                        write_policy: WritePolicy::NoWrite,
-                        reply_title: title,
-                        reply_body: body,
-                        committed: initial_preview,
-                        working_memory,
-                    }),
-                    AssistantResponse::ToolCalls(_) => Err("fallback responder returned tool calls unexpectedly".to_string()),
-                };
-            }
+    if matches!(prior_memory.conversation_topic, ConversationTopic::Setting) {
+        let entity = OntologyEntity {
+            id: uuid::Uuid::new_v4(),
+            kind: OntologyEntityKind::Setting,
+            label: focus.summary.clone(),
+            summary: focus.summary.clone(),
         };
+        let _ = execute_tool(
+            state,
+            McpToolCall::ProposeOntologyCommit {
+                sync_run_id: None,
+                title: "Setting proposal".to_string(),
+                summary: focus.summary.clone(),
+                entity: Some(entity),
+                relationship: None,
+            },
+        )?;
+    }
 
-        match response {
-            AssistantResponse::ToolCalls(calls) => {
-                if loop_count >= MAX_LOOPS {
-                    finish_sync_run(state, &mut sync_run)?;
-                    return Ok(NarrativeTurnOutcome {
-                        intent: plan.intent,
-                        capabilities: plan.capabilities.clone(),
-                        write_policy: if proposal_recorded { WritePolicy::CandidateOnly } else { WritePolicy::NoWrite },
-                        reply_title: "Architect's Notes".to_string(),
-                        reply_body: "I've processed your input and updated my internal focus. Let's keep building the world.".to_string(),
-                        committed: initial_preview,
-                        working_memory,
-                    });
-                }
+    working_memory.conversation_mode = ConversationMode::Committing;
+    working_memory.recent_corrections.clear();
+    working_memory.open_questions.clear();
+    if let Some(repository) = state.sqlite_repository.as_ref() {
+        let _ = repository.save_working_memory(working_memory.clone());
+    }
 
-                for tool_call in calls {
-                    if !tool_allowed(&tool_call, plan.write_policy.clone()) {
-                        observations.push((tool_call.call, McpToolResult::Empty));
-                        continue;
-                    }
+    Ok(NarrativeTurnOutcome {
+        intent: AssistantIntent::MutateOntology,
+        capabilities: plan.capabilities,
+        write_policy: WritePolicy::CandidateOnly,
+        reply_title: "Story Direction".to_string(),
+        reply_body: format!("I’ve recorded this as the current direction:\n{}", focus.summary),
+        committed: empty_preview(prompt),
+        working_memory,
+    })
+}
 
-                    if matches!(tool_call.call, McpToolCall::ProposeOntologyCommit { .. }) && !mutation_allowed {
-                        observations.push((tool_call.call, McpToolResult::Empty));
-                        continue;
-                    }
+fn respond_from_specialized_path(
+    state: &AppState,
+    prompt: &str,
+    mut working_memory: WorkingMemory,
+    plan: crate::application::CapabilityPlan,
+    response: AssistantResponse,
+    write_policy: WritePolicy,
+) -> Result<NarrativeTurnOutcome, String> {
+    let AssistantResponse::FinalReply {
+        title,
+        body,
+        focus_summary,
+        ..
+    } = response
+    else {
+        return Err("specialized path returned tool calls unexpectedly".to_string());
+    };
 
-                    let call = attach_sync_run(tool_call.call, sync_run.as_ref().map(|run| run.id));
-                    let result = execute_tool(state, call.clone())?;
+    working_memory = state.response_state_finalizer.finalize(
+        working_memory,
+        prompt,
+        &plan,
+        &title,
+        &body,
+        focus_summary.as_deref(),
+    );
+    if let Some(repository) = state.sqlite_repository.as_ref() {
+        let _ = repository.save_working_memory(working_memory.clone());
+    }
 
-                    if matches!(call, McpToolCall::ProposeOntologyCommit { .. }) {
-                        proposal_recorded = true;
-                    }
+    Ok(NarrativeTurnOutcome {
+        intent: plan.intent,
+        capabilities: plan.capabilities,
+        write_policy,
+        reply_title: title,
+        reply_body: body,
+        committed: empty_preview(prompt),
+        working_memory,
+    })
+}
 
-                    observations.push((call, result));
-                }
+fn empty_preview(prompt: &str) -> NarrativeMessagePreview {
+    NarrativeMessagePreview {
+        prompt: prompt.to_string(),
+        suggested_target: NarrativeCommitTarget::Character,
+        character: None,
+        event: None,
+        relationships: Vec::new(),
+        changes: Vec::new(),
+        reply_title: None,
+        reply_body: None,
+    }
+}
+
+fn propose_preview(state: &AppState, preview: &NarrativeMessagePreview) -> Result<bool, String> {
+    if let Some(character) = preview.character.as_ref() {
+        execute_tool(
+            state,
+            McpToolCall::ProposeOntologyCommit {
+                sync_run_id: None,
+                title: format!("Character proposal: {}", character.name),
+                summary: character.summary.clone(),
+                entity: Some(OntologyEntity {
+                    id: uuid::Uuid::new_v4(),
+                    kind: OntologyEntityKind::Character,
+                    label: character.name.clone(),
+                    summary: character.summary.clone(),
+                }),
+                relationship: None,
+            },
+        )?;
+        return Ok(true);
+    }
+
+    if let Some(event) = preview.event.as_ref() {
+        execute_tool(
+            state,
+            McpToolCall::ProposeOntologyCommit {
+                sync_run_id: None,
+                title: format!("Event proposal: {}", event.title),
+                summary: event.summary.clone(),
+                entity: Some(OntologyEntity {
+                    id: uuid::Uuid::new_v4(),
+                    kind: OntologyEntityKind::Event,
+                    label: event.title.clone(),
+                    summary: event.summary.clone(),
+                }),
+                relationship: None,
+            },
+        )?;
+        return Ok(true);
+    }
+
+    if let Some(relationship) = preview.relationships.first().cloned() {
+        execute_tool(
+            state,
+            McpToolCall::ProposeOntologyCommit {
+                sync_run_id: None,
+                title: "Relationship proposal".to_string(),
+                summary: relationship.summary.clone(),
+                entity: None,
+                relationship: Some(relationship),
+            },
+        )?;
+        return Ok(true);
+    }
+
+    Ok(false)
+}
+
+fn plan_for_topic_shift(intent: AssistantIntent) -> crate::application::CapabilityPlan {
+    let mut capabilities = vec![AssistantCapability::UnderstandTurn];
+    match intent {
+        AssistantIntent::MutateDocument => {
+            capabilities.push(AssistantCapability::ProposeDocumentChange);
+            crate::application::CapabilityPlan {
+                intent,
+                capabilities,
+                write_policy: WritePolicy::CandidateOnly,
             }
-            AssistantResponse::FinalReply { intent: _, title, body } => {
-                working_memory.updated_at = chrono::Utc::now();
-                if let Some(repository) = state.sqlite_repository.as_ref() {
-                    let _ = repository.save_working_memory(working_memory.clone());
-                }
-                finish_sync_run(state, &mut sync_run)?;
-
-                return Ok(NarrativeTurnOutcome {
-                    intent: plan.intent,
-                    capabilities: plan.capabilities,
-                    write_policy: if proposal_recorded { WritePolicy::CandidateOnly } else { WritePolicy::NoWrite }, 
-                    reply_title: title,
-                    reply_body: body,
-                    committed: initial_preview,
-                    working_memory,
-                });
+        }
+        _ => {
+            capabilities.push(AssistantCapability::GuideNextStep);
+            crate::application::CapabilityPlan {
+                intent,
+                capabilities,
+                write_policy: WritePolicy::NoWrite,
             }
         }
     }
-}
-
-fn tool_allowed(tool_call: &AssistantToolCall, write_policy: WritePolicy) -> bool {
-    match (&tool_call.call, write_policy) {
-        (
-            McpToolCall::GetNarrativeSnapshot
-            | McpToolCall::GetActiveScreenplay
-            | McpToolCall::GetWorkingMemory,
-            _,
-        ) => true,
-        (McpToolCall::AddStoryTask { .. } | McpToolCall::ResolveStoryTask { .. }, WritePolicy::CandidateOnly | WritePolicy::SafeCommit) => true,
-        (McpToolCall::ProposeOntologyCommit { .. }, WritePolicy::CandidateOnly | WritePolicy::SafeCommit) => true,
-        _ => false,
-    }
-}
-
-fn attach_sync_run(call: McpToolCall, sync_run_id: Option<uuid::Uuid>) -> McpToolCall {
-    match call {
-        McpToolCall::ProposeOntologyCommit {
-            title,
-            summary,
-            entity,
-            relationship,
-            ..
-        } => McpToolCall::ProposeOntologyCommit {
-            sync_run_id,
-            title,
-            summary,
-            entity,
-            relationship,
-        },
-        other => other,
-    }
-}
-
-fn start_sync_run(
-    state: &AppState,
-    prompt: &str,
-    document_version: u64,
-    write_policy: WritePolicy,
-) -> Result<Option<SyncRun>, String> {
-    if matches!(write_policy, WritePolicy::NoWrite) {
-        return Ok(None);
-    }
-
-    match execute_tool(
-        state,
-        McpToolCall::StartNarrativeSyncRun {
-            prompt: prompt.to_string(),
-            document_version,
-        },
-    )? {
-        McpToolResult::SyncRun(run) => Ok(Some(run)),
-        _ => Err("sync start tool returned an unexpected result".to_string()),
-    }
-}
-
-fn finish_sync_run(state: &AppState, sync_run: &mut Option<SyncRun>) -> Result<(), String> {
-    let Some(run) = sync_run.take() else {
-        return Ok(());
-    };
-
-    let _ = execute_tool(state, McpToolCall::FinishSyncRun { sync_run: run })?;
-    Ok(())
 }

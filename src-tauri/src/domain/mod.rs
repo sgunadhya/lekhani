@@ -7,9 +7,10 @@ pub mod screenplay;
 pub mod sync;
 
 pub use assistant_memory::{
-    ActiveAssumption, AssistantCapability, AssistantIntent, FocusItem, FocusKind, OpenQuestion,
-    PinnedDecision, RecentCorrection, StoryTask, TaskCategory, TaskStatus, ToolActionRecord,
-    WorkingMemory, WritePolicy,
+    ActiveAssumption, AssistantCapability, AssistantIntent, Constraint, ConstraintOperator,
+    ConstraintScope, ConstraintStatus, ConversationMode, ConversationTopic, FocusItem,
+    FocusKind, OpenQuestion, PinnedDecision, RecentCorrection, StoryTask, TaskCategory,
+    TaskStatus, ToolActionRecord, WorkingMemory, WritePolicy,
 };
 pub use error::AppError;
 pub use narrative::{

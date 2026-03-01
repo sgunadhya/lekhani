@@ -1,30 +1,58 @@
-use crate::adapters::mcp::{McpToolCall, McpToolResult};
 use crate::domain::{
     AssistantIntent, NarrativeCharacter, NarrativeEvent, NarrativeNudge, NarrativeSnapshot,
     WorkingMemory,
 };
 
-#[derive(Debug, Clone)]
-pub struct AssistantToolCall {
-    pub call: McpToolCall,
-    pub thought: String,
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FollowUpDirective {
+    ElaborateCurrent,
+    AlternativeOption,
+    ConfirmCurrent,
+    RejectCurrent,
+    ShiftToCharacter,
+    ShiftToEvent,
+    AddToScreenplay,
+    Unknown,
 }
 
 pub enum AssistantResponse {
-    ToolCalls(Vec<AssistantToolCall>),
     FinalReply {
         intent: AssistantIntent,
         title: String,
+        focus_summary: Option<String>,
         body: String,
     },
 }
 
 pub trait AssistantAgent: Send + Sync {
-    fn process_turn(
+    fn interpret_followup(
         &self,
         prompt: &str,
         memory: &WorkingMemory,
-        observations: &[(McpToolCall, McpToolResult)],
+    ) -> Result<FollowUpDirective, String>;
+
+    fn elaborate_focus(
+        &self,
+        prompt: &str,
+        memory: &WorkingMemory,
+    ) -> Result<AssistantResponse, String>;
+
+    fn suggest_alternative(
+        &self,
+        prompt: &str,
+        memory: &WorkingMemory,
+    ) -> Result<AssistantResponse, String>;
+
+    fn brainstorm_topic(
+        &self,
+        prompt: &str,
+        memory: &WorkingMemory,
+    ) -> Result<AssistantResponse, String>;
+
+    fn draft_from_focus(
+        &self,
+        prompt: &str,
+        memory: &WorkingMemory,
     ) -> Result<AssistantResponse, String>;
 
     fn generate_nudge(
@@ -35,13 +63,44 @@ pub trait AssistantAgent: Send + Sync {
 }
 
 impl<T: AssistantAgent + ?Sized> AssistantAgent for Box<T> {
-    fn process_turn(
+    fn interpret_followup(
         &self,
         prompt: &str,
         memory: &WorkingMemory,
-        observations: &[(McpToolCall, McpToolResult)],
+    ) -> Result<FollowUpDirective, String> {
+        (**self).interpret_followup(prompt, memory)
+    }
+
+    fn elaborate_focus(
+        &self,
+        prompt: &str,
+        memory: &WorkingMemory,
     ) -> Result<AssistantResponse, String> {
-        (**self).process_turn(prompt, memory, observations)
+        (**self).elaborate_focus(prompt, memory)
+    }
+
+    fn suggest_alternative(
+        &self,
+        prompt: &str,
+        memory: &WorkingMemory,
+    ) -> Result<AssistantResponse, String> {
+        (**self).suggest_alternative(prompt, memory)
+    }
+
+    fn brainstorm_topic(
+        &self,
+        prompt: &str,
+        memory: &WorkingMemory,
+    ) -> Result<AssistantResponse, String> {
+        (**self).brainstorm_topic(prompt, memory)
+    }
+
+    fn draft_from_focus(
+        &self,
+        prompt: &str,
+        memory: &WorkingMemory,
+    ) -> Result<AssistantResponse, String> {
+        (**self).draft_from_focus(prompt, memory)
     }
 
     fn generate_nudge(

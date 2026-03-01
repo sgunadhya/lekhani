@@ -61,6 +61,24 @@ The intended pattern is:
    - what is still unclear
    - best next step
 
+The runtime control model should follow a fixed dialogue-state pattern:
+
+1. classify the turn
+2. update working memory / belief state
+3. derive capability plan and write policy
+4. expose only the MCP tools allowed for that turn
+5. execute tools
+6. generate the reply from plan + observations + state
+
+Avoid adding behavior by scattering phrase-specific heuristics through orchestration code.
+If a new behavior is needed, it should attach to one of:
+
+- dialogue act classification
+- belief-state update
+- capability planning
+- tool policy
+- response realization
+
 ## MCP Tooling Direction
 
 The ontology should be surfaced to the assistant as MCP tools.

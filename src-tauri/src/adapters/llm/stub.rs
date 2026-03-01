@@ -1,28 +1,97 @@
 use std::collections::BTreeSet;
 
-use crate::adapters::mcp::{McpToolCall, McpToolResult};
 use crate::domain::{
     AssistantIntent, NarrativeCharacter, NarrativeEvent, NarrativeNudge, NarrativeSnapshot,
     WorkingMemory,
 };
-use crate::ports::{AssistantAgent, AssistantResponse, CharacterParser, EventParser, NudgeGenerator};
+use crate::ports::{
+    AssistantAgent, AssistantResponse, CharacterParser, EventParser, FollowUpDirective,
+    NudgeGenerator,
+};
 use uuid::Uuid;
 
 #[derive(Default)]
 pub struct StubNarrativeEngine;
 
 impl AssistantAgent for StubNarrativeEngine {
-    fn process_turn(
+    fn interpret_followup(
         &self,
         _prompt: &str,
         _memory: &WorkingMemory,
-        _observations: &[(McpToolCall, McpToolResult)],
+    ) -> Result<FollowUpDirective, String> {
+        Ok(FollowUpDirective::Unknown)
+    }
+
+    fn elaborate_focus(
+        &self,
+        _prompt: &str,
+        memory: &WorkingMemory,
     ) -> Result<AssistantResponse, String> {
-        // The stub doesn't actually use tools, it just replies.
+        let focus = memory
+            .current_focus
+            .as_ref()
+            .map(|focus| focus.summary.as_str())
+            .unwrap_or("the current idea");
         Ok(AssistantResponse::FinalReply {
             intent: AssistantIntent::Guide,
-            title: "Stub Response".to_string(),
-            body: "I am currently in stub mode. I can't reason about tools yet, but I'm ready to be upgraded to a full Agent Loop.".to_string(),
+            title: "Idea".to_string(),
+            focus_summary: Some(focus.to_string()),
+            body: format!(
+                "Here is a deeper take on {}.\nDevelop its atmosphere, social texture, and the conflict it creates for the story.",
+                focus
+            ),
+        })
+    }
+
+    fn suggest_alternative(
+        &self,
+        _prompt: &str,
+        memory: &WorkingMemory,
+    ) -> Result<AssistantResponse, String> {
+        let topic = format!("{:?}", memory.conversation_topic).to_ascii_lowercase();
+        Ok(AssistantResponse::FinalReply {
+            intent: AssistantIntent::Guide,
+            title: "Idea".to_string(),
+            focus_summary: Some(format!("Alternative {} direction", topic)),
+            body: format!(
+                "Here is another {} direction.\nPick one concrete detail and I will build it out further.",
+                topic
+            ),
+        })
+    }
+
+    fn brainstorm_topic(
+        &self,
+        _prompt: &str,
+        memory: &WorkingMemory,
+    ) -> Result<AssistantResponse, String> {
+        let topic = format!("{:?}", memory.conversation_topic).to_ascii_lowercase();
+        Ok(AssistantResponse::FinalReply {
+            intent: AssistantIntent::Guide,
+            title: "Idea".to_string(),
+            focus_summary: Some(format!("{} direction", topic)),
+            body: format!(
+                "Here is one {} direction to explore.\nGive me one concrete aspect and I will develop it further.",
+                topic
+            ),
+        })
+    }
+
+    fn draft_from_focus(
+        &self,
+        _prompt: &str,
+        memory: &WorkingMemory,
+    ) -> Result<AssistantResponse, String> {
+        let focus = memory
+            .current_focus
+            .as_ref()
+            .map(|focus| focus.summary.as_str())
+            .unwrap_or("the current idea");
+        Ok(AssistantResponse::FinalReply {
+            intent: AssistantIntent::MutateDocument,
+            title: "Screenplay Draft".to_string(),
+            focus_summary: Some(focus.to_string()),
+            body: format!("A scene grows out of {}.", focus),
         })
     }
 

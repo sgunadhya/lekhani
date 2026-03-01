@@ -6,13 +6,13 @@ use serde_json::json;
 use uuid::Uuid;
 
 use super::StubNarrativeEngine;
-use crate::adapters::mcp::{McpToolCall, McpToolResult};
+use crate::application::{DialogueAct, DialogueActClassifier, DialogueActContext};
 use crate::domain::{
     AssistantIntent, NarrativeCharacter, NarrativeEvent, NarrativeNudge, NarrativeSnapshot,
-    OntologyEntity, OntologyRelationship, StoryTask, WorkingMemory,
+    WorkingMemory,
 };
 use crate::ports::{
-    AssistantAgent, AssistantResponse, AssistantToolCall, CharacterParser, EventParser,
+    AssistantAgent, AssistantResponse, CharacterParser, EventParser, FollowUpDirective,
     NudgeGenerator,
 };
 
@@ -21,24 +21,224 @@ pub struct FmRsNarrativeEngine {
     model: Arc<SystemLanguageModel>,
 }
 
+impl DialogueActClassifier for FmRsNarrativeEngine {
+    fn classify(&self, context: DialogueActContext<'_>) -> DialogueAct {
+        let session = match Session::with_instructions(&self.model, DIALOGUE_ACT_SYSTEM_PROMPT) {
+            Ok(session) => session,
+            Err(_) => return DialogueAct::Brainstorm,
+        };
+        let response = match session.respond(
+            &format!(
+                "Prompt: {}\nCurrent mode: {:?}\nCurrent focus: {}\nReturn exactly one JSON object: {{\"dialogue_act\":\"Query|Brainstorm|Constraint|Correction|Confirmation|Commit|RewriteRequest\"}}",
+                context.prompt,
+                context.memory.conversation_mode,
+                context.memory.current_focus.as_ref().map(|f| f.summary.as_str()).unwrap_or("None")
+            ),
+            &Self::options(),
+        ) {
+            Ok(response) => response,
+            Err(_) => return DialogueAct::Brainstorm,
+        };
+        let value = match parse_single_json_object(&format!("{}", response)) {
+            Ok(value) => value,
+            Err(_) => return DialogueAct::Brainstorm,
+        };
+        match value
+            .get("dialogue_act")
+            .and_then(|v| v.as_str())
+            .unwrap_or("Brainstorm")
+        {
+            "Query" => DialogueAct::Query,
+            "Constraint" => DialogueAct::Constraint,
+            "Correction" => DialogueAct::Correction,
+            "Confirmation" => DialogueAct::Confirmation,
+            "Commit" => DialogueAct::Commit,
+            "RewriteRequest" => DialogueAct::RewriteRequest,
+            _ => DialogueAct::Brainstorm,
+        }
+    }
+}
+
 impl AssistantAgent for FmRsNarrativeEngine {
-    fn process_turn(
+    fn interpret_followup(
         &self,
         prompt: &str,
         memory: &WorkingMemory,
-        observations: &[(McpToolCall, McpToolResult)],
-    ) -> Result<AssistantResponse, String> {
-        let session = Session::with_instructions(&self.model, AGENT_SYSTEM_PROMPT)
+    ) -> Result<FollowUpDirective, String> {
+        let session = Session::with_instructions(&self.model, FOLLOWUP_INTERPRETER_SYSTEM_PROMPT)
             .map_err(|err| err.to_string())?;
-
-        let agent_prompt = build_agent_turn_prompt(prompt, memory, observations);
-        
+        let focus = memory
+            .current_focus
+            .as_ref()
+            .map(|item| item.summary.as_str())
+            .unwrap_or("None");
         let response = session
-            .respond(&agent_prompt, &Self::options())
+            .respond(
+                &format!(
+                    "Topic: {:?}\nMode: {:?}\nCurrent focus: {}\nUser: {}\nReturn exactly one JSON object: {{\"directive\":\"ElaborateCurrent|AlternativeOption|ConfirmCurrent|RejectCurrent|Unknown\"}}",
+                    memory.conversation_topic,
+                    memory.conversation_mode,
+                    focus,
+                    prompt
+                ),
+                &Self::options(),
+            )
             .map_err(|err| err.to_string())?;
 
-        // Parse the response to see if it's a tool call or a final reply
-        parse_agent_response(&format!("{}", response))
+        let value = parse_single_json_object(&format!("{}", response))?;
+        let directive = match value
+            .get("directive")
+            .and_then(|v| v.as_str())
+            .unwrap_or("Unknown")
+        {
+            "ElaborateCurrent" => FollowUpDirective::ElaborateCurrent,
+            "AlternativeOption" => FollowUpDirective::AlternativeOption,
+            "ConfirmCurrent" => FollowUpDirective::ConfirmCurrent,
+            "RejectCurrent" => FollowUpDirective::RejectCurrent,
+            "ShiftToCharacter" => FollowUpDirective::ShiftToCharacter,
+            "ShiftToEvent" => FollowUpDirective::ShiftToEvent,
+            "AddToScreenplay" => FollowUpDirective::AddToScreenplay,
+            _ => FollowUpDirective::Unknown,
+        };
+        Ok(directive)
+    }
+
+    fn elaborate_focus(
+        &self,
+        prompt: &str,
+        memory: &WorkingMemory,
+    ) -> Result<AssistantResponse, String> {
+        let session = Session::with_instructions(&self.model, REFINE_FOCUS_SYSTEM_PROMPT)
+            .map_err(|err| err.to_string())?;
+        let focus = memory
+            .current_focus
+            .as_ref()
+            .map(|item| item.summary.as_str())
+            .unwrap_or("the current idea");
+        let response = session
+            .respond(
+                &format!(
+                    "Topic: {:?}\nCurrent focus: {}\nWriter follow-up: {}\nReturn exactly one JSON object: {{\"focus_summary\":\"...\",\"body\":\"...\"}}. The focus_summary must restate the same current idea in a short phrase. The body must elaborate the same idea and must not replace it with a different option.",
+                    memory.conversation_topic, focus, prompt
+                ),
+                &Self::options(),
+            )
+            .map_err(|err| err.to_string())?;
+        let reply = parse_focus_reply(&format!("{}", response), focus)?;
+        Ok(AssistantResponse::FinalReply {
+            intent: AssistantIntent::Guide,
+            title: "Idea".to_string(),
+            focus_summary: Some(reply.focus_summary),
+            body: clean_conversational_text(&reply.body),
+        })
+    }
+
+    fn suggest_alternative(
+        &self,
+        prompt: &str,
+        memory: &WorkingMemory,
+    ) -> Result<AssistantResponse, String> {
+        let session = Session::with_instructions(&self.model, ALTERNATIVE_OPTION_SYSTEM_PROMPT)
+            .map_err(|err| err.to_string())?;
+        let focus = memory
+            .current_focus
+            .as_ref()
+            .map(|item| item.summary.as_str())
+            .unwrap_or("the current idea");
+        let rejected = memory
+            .constraints
+            .iter()
+            .filter(|constraint| {
+                matches!(constraint.status, crate::domain::ConstraintStatus::Active)
+                    && !matches!(constraint.operator, crate::domain::ConstraintOperator::Correct)
+            })
+            .map(|constraint| constraint.value.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
+        let response = session
+            .respond(
+                &format!(
+                    "Topic: {:?}\nCurrent option: {}\nRejected constraints: {}\nWriter follow-up: {}\nReturn exactly one JSON object: {{\"focus_summary\":\"...\",\"body\":\"...\"}}. Suggest one different option in the same topic. Do not repeat the current option or rejected ideas. The focus_summary must name only the new option.",
+                    memory.conversation_topic, focus, rejected, prompt
+                ),
+                &Self::options(),
+            )
+            .map_err(|err| err.to_string())?;
+        let reply = parse_focus_reply(&format!("{}", response), "alternative idea")?;
+        Ok(AssistantResponse::FinalReply {
+            intent: AssistantIntent::Guide,
+            title: "Idea".to_string(),
+            focus_summary: Some(reply.focus_summary),
+            body: clean_conversational_text(&reply.body),
+        })
+    }
+
+    fn brainstorm_topic(
+        &self,
+        prompt: &str,
+        memory: &WorkingMemory,
+    ) -> Result<AssistantResponse, String> {
+        let session = Session::with_instructions(&self.model, BRAINSTORM_TOPIC_SYSTEM_PROMPT)
+            .map_err(|err| err.to_string())?;
+        let rejected = memory
+            .constraints
+            .iter()
+            .filter(|constraint| {
+                matches!(constraint.status, crate::domain::ConstraintStatus::Active)
+                    && !matches!(constraint.operator, crate::domain::ConstraintOperator::Correct)
+            })
+            .map(|constraint| constraint.value.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
+        let response = session
+            .respond(
+                &format!(
+                    "Topic: {:?}\nCurrent focus: {}\nRejected constraints: {}\nWriter: {}\nReturn exactly one JSON object: {{\"focus_summary\":\"...\",\"body\":\"...\"}}. Suggest one concise option in this topic. If there is current focus, make the new option grow naturally out of it. Keep it concrete and do not commit anything. The focus_summary must describe only the setting, character, event, or relationship anchor for this topic. Do not include unrelated characters or plot unless the topic requires them.",
+                    memory.conversation_topic,
+                    memory.current_focus.as_ref().map(|f| f.summary.as_str()).unwrap_or("None"),
+                    rejected,
+                    prompt
+                ),
+                &Self::options(),
+            )
+            .map_err(|err| err.to_string())?;
+        let reply = parse_focus_reply(&format!("{}", response), "story idea")?;
+        Ok(AssistantResponse::FinalReply {
+            intent: AssistantIntent::Guide,
+            title: "Idea".to_string(),
+            focus_summary: Some(reply.focus_summary),
+            body: clean_conversational_text(&reply.body),
+        })
+    }
+
+    fn draft_from_focus(
+        &self,
+        prompt: &str,
+        memory: &WorkingMemory,
+    ) -> Result<AssistantResponse, String> {
+        let session = Session::with_instructions(&self.model, SCREENPLAY_DRAFT_SYSTEM_PROMPT)
+            .map_err(|err| err.to_string())?;
+        let focus = memory
+            .current_focus
+            .as_ref()
+            .map(|item| item.summary.as_str())
+            .unwrap_or("the current idea");
+        let response = session
+            .respond(
+                &format!(
+                    "Current focus: {}\nTopic: {:?}\nWriter request: {}\nReturn exactly one JSON object: {{\"focus_summary\":\"...\",\"body\":\"...\"}}. The focus_summary should restate the current focus. The body should be a concise screenplay-style prose beat or scene fragment that uses the current focus.",
+                    focus, memory.conversation_topic, prompt
+                ),
+                &Self::options(),
+            )
+            .map_err(|err| err.to_string())?;
+        let reply = parse_focus_reply(&format!("{}", response), focus)?;
+        Ok(AssistantResponse::FinalReply {
+            intent: AssistantIntent::MutateDocument,
+            title: "Screenplay Draft".to_string(),
+            focus_summary: Some(reply.focus_summary),
+            body: clean_conversational_text(&reply.body),
+        })
     }
 
     fn generate_nudge(
@@ -71,152 +271,58 @@ impl AssistantAgent for FmRsNarrativeEngine {
     }
 }
 
-const AGENT_SYSTEM_PROMPT: &str = r#"You are Lekhani, a Story Architect.
-Help the writer build a structured screenplay model.
+const DIALOGUE_ACT_SYSTEM_PROMPT: &str = r#"Classify the writer's turn for a story-building assistant.
+Return exactly one JSON object: {"dialogue_act":"Query|Brainstorm|Constraint|Correction|Confirmation|Commit|RewriteRequest"}.
+Use:
+- Query: asks for more, asks a question, or asks to continue/refine
+- Brainstorm: asks for an idea or option
+- Constraint: rules out a direction
+- Correction: corrects an earlier assumption
+- Confirmation: accepts the current idea
+- Commit: provides concrete story structure to record
+- RewriteRequest: asks to turn an idea into screenplay text"#;
 
-RULES:
-1. The writer is the user. Never address them as a character.
-2. Never commit canonical ontology changes directly. You may only propose changes via ontology.propose_commit.
-3. Be concise.
-4. Your entire response must be exactly one JSON object in one of these two forms:
-   - {"tool_calls":[{"name":"ontology.get_snapshot","parameters":{},"thought":"short optional reason"}]}
-   - {"final_reply":{"intent":"Guide","title":"Idea","body":"How about a desert setting?"}}
-5. Do not return any other top-level keys. In particular, never return a bare {"thought": ...} object.
-6. If you are unsure, return final_reply instead of a tool call.
+const FOLLOWUP_INTERPRETER_SYSTEM_PROMPT: &str = r#"You classify follow-up intent for an active story conversation.
+Return exactly one JSON object: {"directive":"ElaborateCurrent|AlternativeOption|ConfirmCurrent|RejectCurrent|ShiftToCharacter|ShiftToEvent|AddToScreenplay|Unknown"}.
+Choose:
+- ElaborateCurrent: the writer wants more depth on the active idea
+- AlternativeOption: the writer wants a different option in the same topic
+- ConfirmCurrent: the writer accepts the active idea
+- RejectCurrent: the writer rejects the active idea
+- ShiftToCharacter: the writer wants to move from the current idea into character design
+- ShiftToEvent: the writer wants to move from the current idea into an event or scene
+- AddToScreenplay: the writer wants the current idea turned into screenplay text
+- Unknown: unclear"#;
 
-Allowed tools: ontology.get_snapshot, assistant.get_working_memory, ontology.propose_commit, assistant.add_story_task."#;
+const REFINE_FOCUS_SYSTEM_PROMPT: &str = r#"You are expanding an already chosen story idea.
+Stay within the same topic and the same current idea.
+Do not switch to a different option.
+Do not use conversational preambles, acknowledgements, or offers to help.
+Start directly with the content.
+Write 2-4 concise sentences in natural language."#;
+
+const ALTERNATIVE_OPTION_SYSTEM_PROMPT: &str = r#"You are suggesting a different story option in the same topic.
+Offer one new option that contrasts with the current one.
+Do not repeat rejected ideas.
+Do not use conversational preambles, acknowledgements, or offers to help.
+Start directly with the option.
+Write 2-4 concise sentences in natural language."#;
+
+const BRAINSTORM_TOPIC_SYSTEM_PROMPT: &str = r#"You are helping a writer brainstorm one concrete story option inside a topic.
+Suggest exactly one option.
+Do not switch topics.
+Do not commit structure.
+Do not use conversational preambles, acknowledgements, numbered lists, or offers to help.
+Start directly with the suggestion.
+Write 2-4 concise sentences in natural language."#;
+
+const SCREENPLAY_DRAFT_SYSTEM_PROMPT: &str = r#"You turn a chosen story idea into screenplay-ready draft text.
+Stay faithful to the current focus.
+Do not introduce a different direction.
+Do not use conversational preambles or explanations.
+Write 3-6 concise sentences."#;
 
 const NUDGE_SYSTEM_PROMPT: &str = "You are a story coach. Based on the state, give a friendly 1-sentence nudge to keep the user writing.";
-
-fn build_agent_turn_prompt(
-    prompt: &str,
-    memory: &WorkingMemory,
-    observations: &[(McpToolCall, McpToolResult)],
-) -> String {
-    let mut parts = Vec::new();
-    parts.push(format!("User: {}", prompt));
-    
-    // Just the count and summary, no full backlog
-    parts.push(format!(
-        "Status: {} open tasks. Focus: {}.",
-        memory.story_backlog.iter().filter(|t| matches!(t.status, crate::domain::TaskStatus::Open)).count(),
-        memory.current_focus.as_ref().map(|f| f.summary.as_str()).unwrap_or("None")
-    ));
-
-    if !observations.is_empty() {
-        parts.push("Recent tool results:".to_string());
-        // Only keep last 2 observations to save space
-        for (call, result) in observations.iter().rev().take(2).rev() {
-            let result_str = match result {
-                McpToolResult::Snapshot(s) => format!("{} chars, {} events", s.characters.len(), s.events.len()),
-                McpToolResult::Empty => "Success".to_string(),
-                _ => "Data returned".to_string(),
-            };
-            parts.push(format!("{}: {}", call.name(), result_str));
-        }
-    }
-
-    parts.push(
-        "Respond with exactly one JSON object using either {\"tool_calls\":[...]} or {\"final_reply\":{...}}."
-            .to_string(),
-    );
-    parts.join("\n")
-}
-
-fn parse_agent_response(text: &str) -> Result<AssistantResponse, String> {
-    // Try to repair truncated JSON
-    let mut repaired_text = text.trim().to_string();
-    let mut in_string = false;
-    let mut escaped = false;
-    for c in repaired_text.chars() {
-        if c == '\\' { escaped = !escaped; }
-        else if c == '"' && !escaped { in_string = !in_string; escaped = false; }
-        else { escaped = false; }
-    }
-    if in_string { repaired_text.push('"'); }
-    let open_braces = repaired_text.chars().filter(|&c| c == '{').count();
-    let close_braces = repaired_text.chars().filter(|&c| c == '}').count();
-    if open_braces > close_braces {
-        for _ in 0..(open_braces - close_braces) { repaired_text.push('}'); }
-    }
-    let text = &repaired_text;
-
-    let json_val = parse_single_json_object(text)?;
-
-    // 1. Final Reply detection
-    if let Some(r) = json_val.get("final_reply") {
-        let intent = match r.get("intent").and_then(|v| v.as_str()).unwrap_or("") {
-            "MutateOntology" => AssistantIntent::MutateOntology,
-            "Query" => AssistantIntent::Query,
-            "Clarify" => AssistantIntent::Clarify,
-            _ => AssistantIntent::Guide,
-        };
-        let title = r.get("title").and_then(|v| v.as_str()).unwrap_or("Architect").to_string();
-        let body = match r.get("body") {
-            Some(serde_json::Value::String(s)) => s.clone(),
-            Some(serde_json::Value::Object(obj)) => obj.iter().map(|(k, v)| format!("• {}: {}", k.replace('_', " "), v.as_str().unwrap_or(&v.to_string()))).collect::<Vec<_>>().join("\n"),
-            _ => "".to_string(),
-        };
-        return Ok(AssistantResponse::FinalReply { intent, title, body });
-    }
-
-    // 2. Tool Call detection
-    if let Some(calls) = json_val.get("tool_calls").and_then(|v| v.as_array()) {
-        if calls.is_empty() {
-            return Err("assistant returned an empty tool_calls array".to_string());
-        }
-
-        let mut tool_calls = Vec::with_capacity(calls.len());
-        for call_val in calls {
-            let name = call_val
-                .get("name")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| "assistant tool call is missing name".to_string())?;
-            let params = call_val
-                .get("parameters")
-                .or_else(|| call_val.get("arguments"))
-                .cloned()
-                .unwrap_or_else(|| serde_json::json!({}));
-            let thought = call_val
-                .get("thought")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string();
-            let call = map_tool_call(name, &params)?;
-            tool_calls.push(AssistantToolCall { call, thought });
-        }
-
-        return Ok(AssistantResponse::ToolCalls(tool_calls));
-    }
-
-    Err("assistant returned JSON without a valid final_reply or tool_calls envelope".to_string())
-}
-
-fn map_tool_call(name: &str, params: &serde_json::Value) -> Result<McpToolCall, String> {
-    match name {
-        "ontology.get_snapshot" => Ok(McpToolCall::GetNarrativeSnapshot),
-        "assistant.get_working_memory" => Ok(McpToolCall::GetWorkingMemory),
-        "ontology.propose_commit" => {
-            let title = params.get("title").and_then(|v| v.as_str()).unwrap_or("Proposal").to_string();
-            let summary = params.get("summary").and_then(|v| v.as_str()).unwrap_or("").to_string();
-            let entity = params.get("entity").and_then(|v| serde_json::from_value(v.clone()).ok());
-            let relationship = params.get("relationship").and_then(|v| serde_json::from_value(v.clone()).ok());
-            Ok(McpToolCall::ProposeOntologyCommit {
-                sync_run_id: None,
-                title,
-                summary,
-                entity,
-                relationship,
-            })
-        },
-        "assistant.add_story_task" => {
-            let task_val = params.get("task").ok_or("Missing task")?;
-            let task: StoryTask = serde_json::from_value(task_val.clone()).map_err(|e| e.to_string())?;
-            Ok(McpToolCall::AddStoryTask { task })
-        },
-        _ => Err(format!("Unknown tool: {}", name)),
-    }
-}
 
 fn parse_single_json_object(text: &str) -> Result<serde_json::Value, String> {
     if let Ok(value) = serde_json::from_str::<serde_json::Value>(text) {
@@ -231,6 +337,50 @@ fn parse_single_json_object(text: &str) -> Result<serde_json::Value, String> {
     }
 
     Err("assistant did not return a JSON object".to_string())
+}
+
+fn clean_conversational_text(text: &str) -> String {
+    let mut paragraphs = Vec::new();
+
+    for raw in text
+        .split("\n\n")
+        .flat_map(|block| block.lines())
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+    {
+        if paragraphs.last().is_some_and(|prev: &String| prev == raw) {
+            continue;
+        }
+        paragraphs.push(raw.to_string());
+    }
+
+    paragraphs.join("\n\n").trim().to_string()
+}
+
+#[derive(Deserialize)]
+struct FocusReply {
+    focus_summary: String,
+    body: String,
+}
+
+fn parse_focus_reply(text: &str, fallback_focus: &str) -> Result<FocusReply, String> {
+    let value = parse_single_json_object(text)?;
+    let focus_summary = value
+        .get("focus_summary")
+        .and_then(|value| value.as_str())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or(fallback_focus)
+        .to_string();
+    let body = value
+        .get("body")
+        .and_then(|value| value.as_str())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| "assistant reply is missing body".to_string())?
+        .to_string();
+
+    Ok(FocusReply { focus_summary, body })
 }
 
 impl FmRsNarrativeEngine {

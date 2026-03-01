@@ -1,11 +1,11 @@
 use crate::api::dto::{
-    AssistantIntentDto, NarrativeChangeKindDto, NarrativeCommitTargetDto, PreviewNarrativeInputDto,
-    TaskStatusDto, WorkingMemoryDto,
+    AssistantIntentDto, ConstraintScopeDto, FocusKindDto, NarrativeChangeKindDto,
+    NarrativeCommitTargetDto, PreviewNarrativeInputDto, TaskStatusDto, WorkingMemoryDto,
 };
 use crate::state::document::DocumentContext;
 use crate::state::narrative::{
-    create_llm_status_resource, create_preview_resource, create_turn_action, ChatMessage,
-    ChatRole, NarrativeChatContext,
+    create_llm_status_resource, create_nudge_resource, create_preview_resource,
+    create_turn_action, ChatMessage, ChatRole, NarrativeChatContext,
 };
 use gloo_timers::callback::Timeout;
 use leptos::*;
@@ -19,7 +19,9 @@ pub fn ChatInterface() -> impl IntoView {
     let prompt = Signal::derive(move || chat.prompt.get());
     let set_prompt = move |value: String| chat.prompt.set(value);
     let (debounced_prompt, set_debounced_prompt) = create_signal(String::new());
+    let (nudge_nonce, set_nudge_nonce) = create_signal(0_u64);
     let llm_status = create_llm_status_resource();
+    let nudge = create_nudge_resource(nudge_nonce);
     let preview = create_preview_resource(debounced_prompt);
     let turn_action = create_turn_action();
     let debounce_handle: Rc<RefCell<Option<Timeout>>> = Rc::new(RefCell::new(None));
@@ -66,6 +68,7 @@ pub fn ChatInterface() -> impl IntoView {
 
     Effect::new(move |_| {
         if let Some(Ok(turn)) = turn_action.value().get() {
+            set_nudge_nonce.update(|value| *value += 1);
             chat.working_memory.set(Some(turn.working_memory.clone()));
             chat.last_intent.set(Some(turn.intent.clone()));
             let committed = turn.committed;
@@ -81,6 +84,18 @@ pub fn ChatInterface() -> impl IntoView {
                             .push_str(&format!("[[Narrative note: {}]]", prompt));
                     }
                 });
+            } else if turn.intent == AssistantIntentDto::MutateDocument {
+                let draft_text = turn.reply_body.trim().to_string();
+                if !draft_text.is_empty() {
+                    document.document.update(|current| {
+                        if let Some(current) = current {
+                            if !current.fountain_text.trim().is_empty() {
+                                current.fountain_text.push_str("\n\n");
+                            }
+                            current.fountain_text.push_str(&draft_text);
+                        }
+                    });
+                }
             }
 
             chat.messages.update(|items| {
@@ -131,14 +146,25 @@ pub fn ChatInterface() -> impl IntoView {
 
             <div class="narrative-context-strip">
                 {move || match chat.working_memory.get() {
-                    Some(memory) => view! {
-                        <p class="muted">{render_working_memory(&memory)}</p>
-                    }.into_view(),
+                    Some(memory) => render_working_memory(&memory).into_view(),
                     _ => view! {
-                        <p class="muted">
-                            "Assistant context will appear here as the conversation settles."
-                        </p>
+                        <div class="narrative-context-grid">
+                            <section class="narrative-context-panel">
+                                <span class="eyebrow">"Current thread"</span>
+                                <p class="narrative-context-value">"Story"</p>
+                                <p class="muted">"Assistant context will appear here as the conversation settles."</p>
+                            </section>
+                        </div>
                     }.into_view(),
+                }}
+            </div>
+
+            <div class="narrative-nudge-strip">
+                <span class="eyebrow">"Next nudge"</span>
+                {move || match nudge.get() {
+                    None => view! { <p class="muted">"Thinking about the next useful move..."</p> }.into_view(),
+                    Some(Ok(nudge)) => view! { <p>{nudge.message}</p> }.into_view(),
+                    Some(Err(err)) => view! { <p class="error">{err}</p> }.into_view(),
                 }}
             </div>
 
@@ -236,40 +262,100 @@ fn summarize_preview(preview: &PreviewNarrativeInputDto) -> String {
         .join(" ")
 }
 
-fn render_working_memory(memory: &WorkingMemoryDto) -> String {
-    let mut lines = Vec::new();
-
-    if let Some(focus) = &memory.current_focus {
-        lines.push(format!("Focus: {}", focus.summary));
-    }
-
-    let open_tasks = memory
+fn render_working_memory(memory: &WorkingMemoryDto) -> impl IntoView {
+    let current_thread = current_thread_label(memory);
+    let anchor = memory.current_focus.as_ref().map(|focus| focus.summary.clone());
+    let active_constraint = memory
+        .constraints
+        .iter()
+        .find(|constraint| matches!(constraint.status, crate::api::dto::ConstraintStatusDto::Active))
+        .map(|constraint| constraint.value.clone());
+    let active_question = memory.open_questions.first().map(|question| question.question.clone());
+    let deferred = memory
         .story_backlog
         .iter()
-        .filter(|t| matches!(t.status, TaskStatusDto::Open))
+        .filter(|task| matches!(task.status, TaskStatusDto::Open))
         .collect::<Vec<_>>();
-
-    if let Some(task) = open_tasks.first() {
-        if open_tasks.len() > 1 {
-            lines.push(format!("Goal: {} (+{} more)", task.description, open_tasks.len() - 1));
+    let deferred_summary = deferred.first().map(|task| {
+        if deferred.len() > 1 {
+            format!("{} (+{} more)", task.description, deferred.len() - 1)
         } else {
-            lines.push(format!("Goal: {}", task.description));
+            task.description.clone()
         }
+    });
+
+    view! {
+        <div class="narrative-context-grid">
+            <section class="narrative-context-panel">
+                <span class="eyebrow">"Current thread"</span>
+                <p class="narrative-context-value">{current_thread}</p>
+            </section>
+
+            {anchor.map(|anchor| {
+                view! {
+                    <section class="narrative-context-panel">
+                        <span class="eyebrow">"Current anchor"</span>
+                        <p class="narrative-context-value">{anchor}</p>
+                    </section>
+                }
+            })}
+
+            {active_constraint.map(|constraint| {
+                view! {
+                    <section class="narrative-context-panel">
+                        <span class="eyebrow">"Constraint"</span>
+                        <p class="narrative-context-value">{constraint}</p>
+                    </section>
+                }
+            })}
+
+            {active_question.map(|question| {
+                view! {
+                    <section class="narrative-context-panel">
+                        <span class="eyebrow">"Next question"</span>
+                        <p class="narrative-context-value">{question}</p>
+                    </section>
+                }
+            })}
+
+            {deferred_summary.map(|summary| {
+                view! {
+                    <section class="narrative-context-panel">
+                        <span class="eyebrow">"Deferred"</span>
+                        <p class="narrative-context-value">{summary}</p>
+                    </section>
+                }
+            })}
+        </div>
+    }
+}
+
+fn current_thread_label(memory: &WorkingMemoryDto) -> String {
+    if let Some(focus) = &memory.current_focus {
+        return match focus.kind {
+            FocusKindDto::Character => "Character".to_string(),
+            FocusKindDto::Event => "Event".to_string(),
+            FocusKindDto::Relationship => "Relationship".to_string(),
+            FocusKindDto::Scene => "Scene".to_string(),
+            FocusKindDto::Structure => "Structure".to_string(),
+            FocusKindDto::LintResolution => "Lint".to_string(),
+            FocusKindDto::OpenQuestion => "Open question".to_string(),
+        };
     }
 
-    if let Some(question) = memory.open_questions.first() {
-        lines.push(format!("Question: {}", question.question));
+    if let Some(constraint) = memory.constraints.first() {
+        return match constraint.scope {
+            ConstraintScopeDto::Setting => "Setting".to_string(),
+            ConstraintScopeDto::Character => "Character".to_string(),
+            ConstraintScopeDto::Event => "Event".to_string(),
+            ConstraintScopeDto::Relationship => "Relationship".to_string(),
+            ConstraintScopeDto::Tone => "Tone".to_string(),
+            ConstraintScopeDto::Structure => "Structure".to_string(),
+            ConstraintScopeDto::General => "Story".to_string(),
+        };
     }
 
-    if let Some(decision) = memory.pinned_decisions.first() {
-        lines.push(format!("Pinned: {}", decision.summary));
-    }
-
-    if lines.is_empty() {
-        "No active context yet.".to_string()
-    } else {
-        lines.join(" · ")
-    }
+    "Story".to_string()
 }
 
 fn render_markdown(text: &str) -> impl IntoView {

@@ -91,6 +91,8 @@ impl SqliteScreenplayRepository {
             .map_err(|_| AppError::StatePoisoned("failed to open sqlite database"))?;
         Self::apply_migrations(&connection)
             .map_err(|_| AppError::StatePoisoned("failed to apply sqlite migrations"))?;
+        Self::ensure_assistant_memory_columns(&connection)
+            .map_err(|_| AppError::StatePoisoned("failed to update assistant memory schema"))?;
         Self::backfill_screenplay_changes(&connection)
             .map_err(|_| AppError::StatePoisoned("failed to normalize screenplay changes"))?;
         Ok(connection)
@@ -102,6 +104,7 @@ impl SqliteScreenplayRepository {
         }
         let connection = Connection::open(path)?;
         Self::apply_migrations(&connection)?;
+        Self::ensure_assistant_memory_columns(&connection)?;
         Self::backfill_screenplay_changes(&connection)?;
         Ok(())
     }
@@ -129,6 +132,37 @@ impl SqliteScreenplayRepository {
             connection.execute(
                 "INSERT INTO schema_migrations (version, applied_at) VALUES (?1, ?2)",
                 params![version, Utc::now().to_rfc3339()],
+            )?;
+        }
+
+        Ok(())
+    }
+
+    fn ensure_assistant_memory_columns(
+        connection: &Connection,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let mut statement = connection.prepare("PRAGMA table_info(assistant_working_memory)")?;
+        let columns = statement
+            .query_map([], |row| row.get::<_, String>(1))?
+            .collect::<Result<Vec<_>, _>>()?;
+
+        if !columns.iter().any(|column| column == "constraints_json") {
+            connection.execute_batch(
+                "ALTER TABLE assistant_working_memory
+                 ADD COLUMN constraints_json TEXT NOT NULL DEFAULT '[]';",
+            )?;
+        }
+
+        if !columns.iter().any(|column| column == "conversation_mode") {
+            connection.execute_batch(
+                "ALTER TABLE assistant_working_memory
+                 ADD COLUMN conversation_mode TEXT NOT NULL DEFAULT 'Brainstorming';",
+            )?;
+        }
+        if !columns.iter().any(|column| column == "conversation_topic") {
+            connection.execute_batch(
+                "ALTER TABLE assistant_working_memory
+                 ADD COLUMN conversation_topic TEXT NOT NULL DEFAULT 'General';",
             )?;
         }
 
@@ -1329,26 +1363,42 @@ impl WorkingMemoryRepository for SqliteScreenplayRepository {
         let connection = self.connection()?;
         connection
             .query_row(
-                "SELECT current_focus_json, open_questions_json, pinned_decisions_json, active_assumptions_json, recent_corrections_json, last_tool_actions_json, updated_at, story_backlog_json
+                "SELECT conversation_mode, conversation_topic, current_focus_json, constraints_json, open_questions_json, pinned_decisions_json, active_assumptions_json, recent_corrections_json, last_tool_actions_json, updated_at, story_backlog_json
                  FROM assistant_working_memory
                  WHERE project_id = ?1 AND session_id = ?2",
                 params![project_id, session_id],
                 |row| {
-                    let current_focus_json: Option<String> = row.get(0)?;
-                    let open_questions_json: String = row.get(1)?;
-                    let pinned_decisions_json: String = row.get(2)?;
-                    let active_assumptions_json: String = row.get(3)?;
-                    let recent_corrections_json: String = row.get(4)?;
-                    let last_tool_actions_json: String = row.get(5)?;
-                    let updated_at: String = row.get(6)?;
-                    let story_backlog_json: String = row.get(7)?;
+                    let conversation_mode: String = row.get(0)?;
+                    let conversation_topic: String = row.get(1)?;
+                    let current_focus_json: Option<String> = row.get(2)?;
+                    let constraints_json: String = row.get(3)?;
+                    let open_questions_json: String = row.get(4)?;
+                    let pinned_decisions_json: String = row.get(5)?;
+                    let active_assumptions_json: String = row.get(6)?;
+                    let recent_corrections_json: String = row.get(7)?;
+                    let last_tool_actions_json: String = row.get(8)?;
+                    let updated_at: String = row.get(9)?;
+                    let story_backlog_json: String = row.get(10)?;
 
                     Ok(WorkingMemory {
                         project_id: project_id.to_string(),
                         session_id: session_id.to_string(),
+                        conversation_mode: match conversation_mode.as_str() {
+                            "Refining" => crate::domain::ConversationMode::Refining,
+                            "Committing" => crate::domain::ConversationMode::Committing,
+                            _ => crate::domain::ConversationMode::Brainstorming,
+                        },
+                        conversation_topic: match conversation_topic.as_str() {
+                            "Setting" => crate::domain::ConversationTopic::Setting,
+                            "Character" => crate::domain::ConversationTopic::Character,
+                            "Event" => crate::domain::ConversationTopic::Event,
+                            "Relationship" => crate::domain::ConversationTopic::Relationship,
+                            _ => crate::domain::ConversationTopic::General,
+                        },
                         current_focus: current_focus_json
                             .as_deref()
                             .and_then(|value| serde_json::from_str::<FocusItem>(value).ok()),
+                        constraints: serde_json::from_str(&constraints_json).unwrap_or_default(),
                         open_questions: serde_json::from_str(&open_questions_json).unwrap_or_default(),
                         pinned_decisions: serde_json::from_str(&pinned_decisions_json).unwrap_or_default(),
                         active_assumptions: serde_json::from_str(&active_assumptions_json)
@@ -1384,6 +1434,8 @@ impl WorkingMemoryRepository for SqliteScreenplayRepository {
             .map(serde_json::to_string)
             .transpose()
             .map_err(|_| AppError::StatePoisoned("failed to serialize working memory focus"))?;
+        let constraints_json = serde_json::to_string(&memory.constraints)
+            .map_err(|_| AppError::StatePoisoned("failed to serialize constraints"))?;
         let open_questions_json = serde_json::to_string(&memory.open_questions)
             .map_err(|_| AppError::StatePoisoned("failed to serialize open questions"))?;
         let pinned_decisions_json = serde_json::to_string(&memory.pinned_decisions)
@@ -1400,10 +1452,13 @@ impl WorkingMemoryRepository for SqliteScreenplayRepository {
         connection
             .execute(
                 "INSERT INTO assistant_working_memory
-                    (project_id, session_id, current_focus_json, open_questions_json, pinned_decisions_json, active_assumptions_json, recent_corrections_json, last_tool_actions_json, updated_at, story_backlog_json)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+                    (project_id, session_id, conversation_mode, conversation_topic, current_focus_json, constraints_json, open_questions_json, pinned_decisions_json, active_assumptions_json, recent_corrections_json, last_tool_actions_json, updated_at, story_backlog_json)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
                  ON CONFLICT(project_id, session_id) DO UPDATE SET
+                    conversation_mode = excluded.conversation_mode,
+                    conversation_topic = excluded.conversation_topic,
                     current_focus_json = excluded.current_focus_json,
+                    constraints_json = excluded.constraints_json,
                     open_questions_json = excluded.open_questions_json,
                     pinned_decisions_json = excluded.pinned_decisions_json,
                     active_assumptions_json = excluded.active_assumptions_json,
@@ -1414,7 +1469,20 @@ impl WorkingMemoryRepository for SqliteScreenplayRepository {
                 params![
                     memory.project_id,
                     memory.session_id,
+                    match memory.conversation_mode {
+                        crate::domain::ConversationMode::Brainstorming => "Brainstorming",
+                        crate::domain::ConversationMode::Refining => "Refining",
+                        crate::domain::ConversationMode::Committing => "Committing",
+                    },
+                    match memory.conversation_topic {
+                        crate::domain::ConversationTopic::Setting => "Setting",
+                        crate::domain::ConversationTopic::Character => "Character",
+                        crate::domain::ConversationTopic::Event => "Event",
+                        crate::domain::ConversationTopic::Relationship => "Relationship",
+                        crate::domain::ConversationTopic::General => "General",
+                    },
                     current_focus_json,
+                    constraints_json,
                     open_questions_json,
                     pinned_decisions_json,
                     active_assumptions_json,

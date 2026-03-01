@@ -33,6 +33,22 @@ pub enum WritePolicy {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub enum ConversationMode {
+    Brainstorming,
+    Refining,
+    Committing,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub enum ConversationTopic {
+    Setting,
+    Character,
+    Event,
+    Relationship,
+    General,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum FocusKind {
     Character,
     Event,
@@ -81,6 +97,43 @@ pub struct RecentCorrection {
     pub corrected_ref: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub enum ConstraintScope {
+    Setting,
+    Character,
+    Event,
+    Relationship,
+    Tone,
+    Structure,
+    General,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub enum ConstraintOperator {
+    Avoid,
+    Prefer,
+    Require,
+    Forbid,
+    Correct,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub enum ConstraintStatus {
+    Active,
+    Satisfied,
+    Dismissed,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Constraint {
+    pub id: String,
+    pub scope: ConstraintScope,
+    pub operator: ConstraintOperator,
+    pub value: String,
+    pub source: String,
+    pub status: ConstraintStatus,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolActionRecord {
     pub tool_name: String,
@@ -123,7 +176,10 @@ pub struct StoryTask {
 pub struct WorkingMemory {
     pub project_id: String,
     pub session_id: String,
+    pub conversation_mode: ConversationMode,
+    pub conversation_topic: ConversationTopic,
     pub current_focus: Option<FocusItem>,
+    pub constraints: Vec<Constraint>,
     pub story_backlog: Vec<StoryTask>,
     pub open_questions: Vec<OpenQuestion>,
     pub pinned_decisions: Vec<PinnedDecision>,
@@ -138,7 +194,10 @@ impl Default for WorkingMemory {
         Self {
             project_id: "current-project".to_string(),
             session_id: "main".to_string(),
+            conversation_mode: ConversationMode::Brainstorming,
+            conversation_topic: ConversationTopic::General,
             current_focus: None,
+            constraints: Vec::new(),
             story_backlog: Vec::new(),
             open_questions: Vec::new(),
             pinned_decisions: Vec::new(),
