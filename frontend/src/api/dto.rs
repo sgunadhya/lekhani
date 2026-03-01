@@ -126,6 +126,22 @@ pub enum WritePolicyDto {
     SafeCommit,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub enum ConversationModeDto {
+    Brainstorming,
+    Refining,
+    Committing,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub enum ConversationTopicDto {
+    Setting,
+    Character,
+    Event,
+    Relationship,
+    General,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum FocusKindDto {
     Character,
@@ -254,6 +270,8 @@ pub struct ToolActionRecordDto {
 pub struct WorkingMemoryDto {
     pub project_id: String,
     pub session_id: String,
+    pub conversation_mode: ConversationModeDto,
+    pub conversation_topic: ConversationTopicDto,
     pub current_focus: Option<FocusItemDto>,
     pub constraints: Vec<ConstraintDto>,
     pub story_backlog: Vec<StoryTaskDto>,
@@ -274,6 +292,22 @@ pub struct AssistantTurnDto {
     pub reply_body: String,
     pub committed: PreviewNarrativeInputDto,
     pub working_memory: WorkingMemoryDto,
+    pub suggested_actions: Vec<NarrativeSuggestedActionViewDto>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub enum NarrativeSuggestionActionDto {
+    UseThis,
+    TryAnother,
+    ExpandThis,
+    AddToScreenplay,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NarrativeSuggestedActionViewDto {
+    pub action: NarrativeSuggestionActionDto,
+    pub label: String,
+    pub primary: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

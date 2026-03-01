@@ -1,9 +1,9 @@
-use crate::adapters::mcp::{get_debug_state, preview_turn, submit_turn, SyncDebugState};
+use crate::adapters::mcp::{apply_suggestion_action, get_debug_state, preview_turn, submit_turn, SyncDebugState};
 use crate::adapters::tauri::dto::{
     AssistantTurnDto, CommitNarrativeInputRequest, DocumentFileDto, LlmStatusDto, NarrativeCharacterDto,
-    NarrativeEventDto, NarrativeNudgeDto, NarrativeSnapshotDto, NarrativeTurnDto,
-    ParseDescriptionRequest, PreviewNarrativeInputDto, SaveDocumentRequest, SyncDebugDto,
-    SaveScreenplayRequest, ScreenplayDto, WorkingMemoryDto,
+    NarrativeEventDto, NarrativeNudgeDto, NarrativeSnapshotDto, NarrativeSuggestionActionRequest,
+    NarrativeTurnDto, ParseDescriptionRequest, PreviewNarrativeInputDto, SaveDocumentRequest,
+    SyncDebugDto, SaveScreenplayRequest, ScreenplayDto, WorkingMemoryDto,
 };
 use crate::adapters::tauri::state::AppState;
 use crate::domain::WorkingMemory;
@@ -282,10 +282,33 @@ pub async fn submit_assistant_turn(
             reply_body: turn.reply_body,
             committed: turn.committed,
             working_memory: turn.working_memory,
+            suggested_actions: turn.suggested_actions,
         })
     })
     .await
     .unwrap_or_else(|err| Err(format!("failed to join assistant turn task: {err}")))
+}
+
+#[tauri::command]
+pub async fn apply_narrative_suggestion(
+    app: AppHandle,
+    request: NarrativeSuggestionActionRequest,
+) -> Result<AssistantTurnDto, String> {
+    tauri::async_runtime::spawn_blocking(move || -> Result<AssistantTurnDto, String> {
+        let state = app.state::<AppState>();
+        apply_suggestion_action(&state, request.action).map(|turn| AssistantTurnDto {
+            intent: turn.intent,
+            capabilities: turn.capabilities,
+            write_policy: turn.write_policy,
+            reply_title: turn.reply_title,
+            reply_body: turn.reply_body,
+            committed: turn.committed,
+            working_memory: turn.working_memory,
+            suggested_actions: turn.suggested_actions,
+        })
+    })
+    .await
+    .unwrap_or_else(|err| Err(format!("failed to join narrative suggestion task: {err}")))
 }
 
 fn preview_narrative_input_inner(

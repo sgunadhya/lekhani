@@ -1,4 +1,5 @@
 pub mod assistant_turn;
+pub mod narrative_runtime;
 pub mod narrative_service;
 pub mod screenplay_service;
 pub mod sync_coordinator;
@@ -8,8 +9,12 @@ pub use assistant_turn::{
     BeliefStateUpdater, CapabilityPlan, CapabilityPlanningContext, DialogueAct,
     DialogueActClassifier, DialogueActContext, DialogueStateContext, DialogueStateUpdate,
     HeuristicAssistantCapabilityPlanner, HeuristicAssistantFallbackResponder,
-    HeuristicBeliefStateUpdater, HeuristicMutationGate, NeutralDialogueActClassifier,
-    HeuristicResponseStateFinalizer, MutationGate, ResponseStateFinalizer,
+    HeuristicBeliefStateUpdater, HeuristicMutationGate, HeuristicResponseStateFinalizer,
+    MutationGate, NarrativeConversationSupport, NeutralDialogueActClassifier,
+    ResponseStateFinalizer,
+};
+pub use narrative_runtime::{
+    DefaultNarrativeRuntime, NarrativeRuntime, NarrativeRuntimeDeps, NarrativeTurnOutcome,
 };
 pub use narrative_service::NarrativeService;
 pub use screenplay_service::ScreenplayService;

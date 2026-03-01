@@ -49,6 +49,12 @@ pub trait AssistantAgent: Send + Sync {
         memory: &WorkingMemory,
     ) -> Result<AssistantResponse, String>;
 
+    fn respond_in_context(
+        &self,
+        prompt: &str,
+        memory: &WorkingMemory,
+    ) -> Result<AssistantResponse, String>;
+
     fn draft_from_focus(
         &self,
         prompt: &str,
@@ -93,6 +99,14 @@ impl<T: AssistantAgent + ?Sized> AssistantAgent for Box<T> {
         memory: &WorkingMemory,
     ) -> Result<AssistantResponse, String> {
         (**self).brainstorm_topic(prompt, memory)
+    }
+
+    fn respond_in_context(
+        &self,
+        prompt: &str,
+        memory: &WorkingMemory,
+    ) -> Result<AssistantResponse, String> {
+        (**self).respond_in_context(prompt, memory)
     }
 
     fn draft_from_focus(

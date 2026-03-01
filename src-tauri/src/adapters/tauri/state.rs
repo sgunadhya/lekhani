@@ -1,16 +1,20 @@
 use crate::adapters::db::SqliteScreenplayRepository;
 use crate::application::{
-    AssistantCapabilityPlanner, AssistantFallbackResponder, BeliefStateUpdater,
-    DialogueActClassifier, MutationGate, NarrativeService, ResponseStateFinalizer,
+    AssistantCapabilityPlanner, AssistantFallbackResponder, AssistantIntentContext,
+    BeliefStateUpdater, CapabilityPlan, CapabilityPlanningContext, DialogueAct,
+    DialogueActClassifier, DialogueActContext, DialogueStateContext, DialogueStateUpdate,
+    MutationGate, NarrativeConversationSupport, NarrativeService, ResponseStateFinalizer,
     ScreenplayService,
 };
 use crate::domain::{
-    AppError, NarrativeCharacter, NarrativeEvent, NarrativeSnapshot, OntologyRelationship,
+    AppError, ConversationTopic, NarrativeCharacter, NarrativeEvent, NarrativeMessagePreview,
+    NarrativeSnapshot, OntologyEntity, OntologyEntityKind, OntologyRelationship, StorySnapshot,
     WorkingMemory,
 };
 use crate::ports::{
-    AssistantAgent, CharacterParser, EventParser, NarrativeRepository, NudgeGenerator,
-    ScreenplayRepository, WorkingMemoryRepository,
+    AssistantAgent, CharacterParser, EventParser, MutationGateway, NarrativeGenerationGateway,
+    NarrativeRepository, NudgeGenerator, QueryGateway, ScreenplayRepository,
+    WorkingMemoryRepository,
 };
 use std::path::Path;
 use std::sync::Arc;
@@ -72,6 +76,218 @@ impl AppState {
             llm_backend,
             llm_detail,
         }
+    }
+}
+
+impl QueryGateway for AppState {
+    fn load_working_memory(&self) -> Result<WorkingMemory, String> {
+        self.get_working_memory()
+    }
+
+    fn load_narrative_snapshot(&self) -> Result<NarrativeSnapshot, String> {
+        self.get_snapshot()
+    }
+
+    fn load_story_snapshot(&self) -> Result<StorySnapshot, String> {
+        let screenplay = self
+            .screenplay_service
+            .get_active_screenplay()
+            .map_err(|err| err.to_string())?;
+
+        Ok(StorySnapshot {
+            screenplay_title: screenplay.title.clone(),
+            fountain_text: screenplay.fountain_text.clone(),
+            narrative: self.get_snapshot()?,
+            working_memory: self.get_working_memory()?,
+        })
+    }
+}
+
+impl MutationGateway for AppState {
+    fn save_working_memory(&self, memory: WorkingMemory) -> Result<(), String> {
+        let Some(repository) = self.sqlite_repository.as_ref() else {
+            return Ok(());
+        };
+
+        repository
+            .save_working_memory(memory)
+            .map(|_| ())
+            .map_err(|err| err.to_string())
+    }
+
+    fn propose_ontology_entity(
+        &self,
+        title: String,
+        summary: String,
+        entity: OntologyEntity,
+    ) -> Result<(), String> {
+        let _ = crate::adapters::mcp::execute_tool(
+            self,
+            crate::adapters::mcp::McpToolCall::ProposeOntologyCommit {
+                sync_run_id: None,
+                title,
+                summary,
+                entity: Some(entity),
+                relationship: None,
+            },
+        )?;
+
+        Ok(())
+    }
+
+    fn confirm_current_focus(
+        &self,
+        topic: ConversationTopic,
+        focus_summary: &str,
+    ) -> Result<bool, String> {
+        if !matches!(topic, ConversationTopic::Setting) {
+            return Ok(false);
+        }
+
+        self.propose_ontology_entity(
+            "Setting proposal".to_string(),
+            focus_summary.to_string(),
+            OntologyEntity {
+                id: uuid::Uuid::new_v4(),
+                kind: OntologyEntityKind::Setting,
+                label: focus_summary.to_string(),
+                summary: focus_summary.to_string(),
+            },
+        )?;
+
+        Ok(true)
+    }
+
+    fn propose_preview(&self, preview: &NarrativeMessagePreview) -> Result<bool, String> {
+        if let Some(character) = preview.character.as_ref() {
+            self.propose_ontology_entity(
+                format!("Character proposal: {}", character.name),
+                character.summary.clone(),
+                OntologyEntity {
+                    id: uuid::Uuid::new_v4(),
+                    kind: OntologyEntityKind::Character,
+                    label: character.name.clone(),
+                    summary: character.summary.clone(),
+                },
+            )?;
+            return Ok(true);
+        }
+
+        if let Some(event) = preview.event.as_ref() {
+            self.propose_ontology_entity(
+                format!("Event proposal: {}", event.title),
+                event.summary.clone(),
+                OntologyEntity {
+                    id: uuid::Uuid::new_v4(),
+                    kind: OntologyEntityKind::Event,
+                    label: event.title.clone(),
+                    summary: event.summary.clone(),
+                },
+            )?;
+            return Ok(true);
+        }
+
+        Ok(false)
+    }
+}
+
+impl NarrativeConversationSupport for AppState {
+    fn classify_dialogue_act(&self, context: DialogueActContext<'_>) -> DialogueAct {
+        self.dialogue_act_classifier.classify(context)
+    }
+
+    fn update_belief_state(&self, context: DialogueStateContext<'_>) -> DialogueStateUpdate {
+        self.belief_state_updater.update(context)
+    }
+
+    fn plan_capabilities(&self, context: CapabilityPlanningContext<'_>) -> CapabilityPlan {
+        self.assistant_capability_planner.plan(context)
+    }
+
+    fn allow_mutation(&self, context: AssistantIntentContext<'_>) -> bool {
+        self.mutation_gate.allow_mutation(context)
+    }
+
+    fn fallback_response(
+        &self,
+        prompt: &str,
+        preview: &crate::domain::NarrativeMessagePreview,
+        memory: &WorkingMemory,
+        plan: &CapabilityPlan,
+    ) -> crate::ports::AssistantResponse {
+        self.assistant_fallback_responder
+            .respond(prompt, preview, memory, plan)
+    }
+
+    fn finalize_response_state(
+        &self,
+        memory: WorkingMemory,
+        prompt: &str,
+        plan: &CapabilityPlan,
+        title: &str,
+        body: &str,
+        focus_summary: Option<&str>,
+    ) -> WorkingMemory {
+        self.response_state_finalizer
+            .finalize(memory, prompt, plan, title, body, focus_summary)
+    }
+}
+
+impl NarrativeGenerationGateway for AppState {
+    fn preview_message(
+        &self,
+        prompt: &str,
+        snapshot: &NarrativeSnapshot,
+    ) -> Result<crate::domain::NarrativeMessagePreview, String> {
+        self.narrative_service.preview_message(prompt, snapshot)
+    }
+
+    fn interpret_followup(
+        &self,
+        prompt: &str,
+        memory: &WorkingMemory,
+    ) -> Result<crate::ports::FollowUpDirective, String> {
+        self.assistant_agent.interpret_followup(prompt, memory)
+    }
+
+    fn elaborate_focus(
+        &self,
+        prompt: &str,
+        memory: &WorkingMemory,
+    ) -> Result<crate::ports::AssistantResponse, String> {
+        self.assistant_agent.elaborate_focus(prompt, memory)
+    }
+
+    fn suggest_alternative(
+        &self,
+        prompt: &str,
+        memory: &WorkingMemory,
+    ) -> Result<crate::ports::AssistantResponse, String> {
+        self.assistant_agent.suggest_alternative(prompt, memory)
+    }
+
+    fn brainstorm_topic(
+        &self,
+        prompt: &str,
+        memory: &WorkingMemory,
+    ) -> Result<crate::ports::AssistantResponse, String> {
+        self.assistant_agent.brainstorm_topic(prompt, memory)
+    }
+
+    fn respond_in_context(
+        &self,
+        prompt: &str,
+        memory: &WorkingMemory,
+    ) -> Result<crate::ports::AssistantResponse, String> {
+        self.assistant_agent.respond_in_context(prompt, memory)
+    }
+
+    fn draft_from_focus(
+        &self,
+        prompt: &str,
+        memory: &WorkingMemory,
+    ) -> Result<crate::ports::AssistantResponse, String> {
+        self.assistant_agent.draft_from_focus(prompt, memory)
     }
 }
 

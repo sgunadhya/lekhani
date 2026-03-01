@@ -62,7 +62,7 @@ impl AssistantAgent for StubNarrativeEngine {
 
     fn brainstorm_topic(
         &self,
-        _prompt: &str,
+        prompt: &str,
         memory: &WorkingMemory,
     ) -> Result<AssistantResponse, String> {
         let topic = format!("{:?}", memory.conversation_topic).to_ascii_lowercase();
@@ -73,6 +73,22 @@ impl AssistantAgent for StubNarrativeEngine {
             body: format!(
                 "Here is one {} direction to explore.\nGive me one concrete aspect and I will develop it further.",
                 topic
+            ),
+        })
+    }
+
+    fn respond_in_context(
+        &self,
+        prompt: &str,
+        _memory: &WorkingMemory,
+    ) -> Result<AssistantResponse, String> {
+        Ok(AssistantResponse::FinalReply {
+            intent: AssistantIntent::Guide,
+            title: "Story Direction".to_string(),
+            focus_summary: Some(prompt.trim().to_string()),
+            body: format!(
+                "I’m taking this as the current story direction.\n{}",
+                prompt.trim()
             ),
         })
     }

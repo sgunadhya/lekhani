@@ -15,6 +15,7 @@ use application::{
     HeuristicResponseStateFinalizer,
 };
 use adapters::tauri::{
+    apply_narrative_suggestion,
     commit_narrative_input, export_fountain_document, get_active_screenplay,
     get_current_project, get_llm_status, get_narrative_snapshot, get_nudge, get_screenplays,
     get_sync_debug, get_working_memory,
@@ -141,6 +142,7 @@ pub fn run() {
             preview_narrative_input,
             commit_narrative_input,
             submit_assistant_turn,
+            apply_narrative_suggestion,
             submit_narrative_turn,
             parse_character,
             parse_event,

@@ -211,6 +211,34 @@ impl AssistantAgent for FmRsNarrativeEngine {
         })
     }
 
+    fn respond_in_context(
+        &self,
+        prompt: &str,
+        memory: &WorkingMemory,
+    ) -> Result<AssistantResponse, String> {
+        let session = Session::with_instructions(&self.model, RESPOND_IN_CONTEXT_SYSTEM_PROMPT)
+            .map_err(|err| err.to_string())?;
+        let response = session
+            .respond(
+                &format!(
+                    "Topic: {:?}\nMode: {:?}\nCurrent focus: {}\nWriter: {}\nReturn exactly one JSON object: {{\"focus_summary\":\"...\",\"body\":\"...\"}}. Preserve explicit facts the writer has already given. If the writer states a setting, era, place, or main character, keep those anchors and build on them instead of replacing them. Do not invent a different protagonist, period, or location unless the writer asks for alternatives. The focus_summary should restate the anchored direction in a short phrase.",
+                    memory.conversation_topic,
+                    memory.conversation_mode,
+                    memory.current_focus.as_ref().map(|f| f.summary.as_str()).unwrap_or("None"),
+                    prompt
+                ),
+                &Self::options(),
+            )
+            .map_err(|err| err.to_string())?;
+        let reply = parse_focus_reply(&format!("{}", response), prompt.trim())?;
+        Ok(AssistantResponse::FinalReply {
+            intent: AssistantIntent::Guide,
+            title: "Story Direction".to_string(),
+            focus_summary: Some(reply.focus_summary),
+            body: clean_conversational_text(&reply.body),
+        })
+    }
+
     fn draft_from_focus(
         &self,
         prompt: &str,
@@ -314,6 +342,14 @@ Do not switch topics.
 Do not commit structure.
 Do not use conversational preambles, acknowledgements, numbered lists, or offers to help.
 Start directly with the suggestion.
+Write 2-4 concise sentences in natural language."#;
+
+const RESPOND_IN_CONTEXT_SYSTEM_PROMPT: &str = r#"You are helping a writer shape a story direction from facts they have already provided.
+Preserve the writer's stated anchors.
+If the writer gives a setting, time period, place, or main character, treat those as the current truth for this turn.
+You may elaborate, connect, or sharpen them, but do not replace them with a different location, era, or protagonist unless the writer explicitly asks for alternatives.
+Do not use conversational preambles, acknowledgements, numbered lists, or offers to help.
+Start directly with the content.
 Write 2-4 concise sentences in natural language."#;
 
 const SCREENPLAY_DRAFT_SYSTEM_PROMPT: &str = r#"You turn a chosen story idea into screenplay-ready draft text.
