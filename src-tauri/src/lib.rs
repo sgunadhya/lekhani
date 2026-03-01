@@ -11,8 +11,7 @@ use adapters::llm::FmRsNarrativeEngine;
 use adapters::llm::StubNarrativeEngine;
 use application::{
     HeuristicAssistantCapabilityPlanner, HeuristicAssistantFallbackResponder,
-    HeuristicBeliefStateUpdater, HeuristicMutationGate, NeutralDialogueActClassifier,
-    HeuristicResponseStateFinalizer,
+    HeuristicBeliefStateUpdater, HeuristicMutationGate, HeuristicResponseStateFinalizer,
 };
 use adapters::tauri::{
     apply_narrative_suggestion,
@@ -103,7 +102,7 @@ pub fn run() {
                 sqlite_repository,
                 llm_backend,
                 llm_detail,
-                narrative_dialogue_classifier(),
+                narrative_provider(),
                 Box::new(HeuristicBeliefStateUpdater),
                 Box::new(HeuristicAssistantCapabilityPlanner),
                 Box::new(HeuristicAssistantFallbackResponder),
@@ -112,7 +111,6 @@ pub fn run() {
                 narrative_character_parser(),
                 narrative_event_parser(),
                 narrative_nudge_generator(),
-                narrative_assistant_agent(),
             ));
 
             if let Some(project_path) = startup_project_path() {
@@ -187,13 +185,13 @@ pub fn run() {
         });
 }
 
-fn narrative_dialogue_classifier() -> Box<dyn application::DialogueActClassifier> {
+fn narrative_provider() -> Box<dyn ports::NarrativeProvider> {
     #[cfg(target_os = "macos")]
     if let Ok(engine) = FmRsNarrativeEngine::new() {
         return Box::new(engine);
     }
 
-    Box::new(NeutralDialogueActClassifier)
+    Box::<StubNarrativeEngine>::default()
 }
 
 fn build_app_menu<R: tauri::Runtime>(app: &tauri::App<R>) -> tauri::Result<tauri::menu::Menu<R>> {
@@ -306,15 +304,6 @@ fn narrative_event_parser() -> Box<dyn ports::EventParser> {
 }
 
 fn narrative_nudge_generator() -> Box<dyn ports::NudgeGenerator> {
-    #[cfg(target_os = "macos")]
-    if let Ok(engine) = FmRsNarrativeEngine::new() {
-        return Box::new(engine);
-    }
-
-    Box::<StubNarrativeEngine>::default()
-}
-
-fn narrative_assistant_agent() -> Box<dyn ports::AssistantAgent> {
     #[cfg(target_os = "macos")]
     if let Ok(engine) = FmRsNarrativeEngine::new() {
         return Box::new(engine);

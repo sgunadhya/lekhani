@@ -1,3 +1,4 @@
+use crate::application::{DialogueAct, DialogueActContext};
 use crate::domain::{
     AssistantIntent, NarrativeCharacter, NarrativeEvent, NarrativeNudge, NarrativeSnapshot,
     WorkingMemory,
@@ -68,6 +69,10 @@ pub trait AssistantAgent: Send + Sync {
     ) -> Result<NarrativeNudge, String>;
 }
 
+pub trait NarrativeProvider: AssistantAgent + Send + Sync {
+    fn classify_dialogue_act(&self, context: DialogueActContext<'_>) -> DialogueAct;
+}
+
 impl<T: AssistantAgent + ?Sized> AssistantAgent for Box<T> {
     fn interpret_followup(
         &self,
@@ -123,6 +128,12 @@ impl<T: AssistantAgent + ?Sized> AssistantAgent for Box<T> {
         memory: &WorkingMemory,
     ) -> Result<NarrativeNudge, String> {
         (**self).generate_nudge(snapshot, memory)
+    }
+}
+
+impl<T: NarrativeProvider + ?Sized> NarrativeProvider for Box<T> {
+    fn classify_dialogue_act(&self, context: DialogueActContext<'_>) -> DialogueAct {
+        (**self).classify_dialogue_act(context)
     }
 }
 

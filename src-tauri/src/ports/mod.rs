@@ -13,7 +13,7 @@ pub mod sync_repository;
 pub use assistant_memory_repository::WorkingMemoryRepository;
 pub use llm_ports::{
     AssistantAgent, AssistantResponse, CharacterParser, EventParser, FollowUpDirective,
-    NudgeGenerator,
+    NarrativeProvider, NudgeGenerator,
 };
 pub use lint_repository::LintRepository;
 pub use link_repository::LinkRepository;

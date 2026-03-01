@@ -59,6 +59,12 @@ impl DialogueActClassifier for FmRsNarrativeEngine {
     }
 }
 
+impl crate::ports::NarrativeProvider for FmRsNarrativeEngine {
+    fn classify_dialogue_act(&self, context: DialogueActContext<'_>) -> DialogueAct {
+        <Self as DialogueActClassifier>::classify(self, context)
+    }
+}
+
 impl AssistantAgent for FmRsNarrativeEngine {
     fn interpret_followup(
         &self,
@@ -221,13 +227,13 @@ impl AssistantAgent for FmRsNarrativeEngine {
         let response = session
             .respond(
                 &format!(
-                    "Topic: {:?}\nMode: {:?}\nCurrent focus: {}\nWriter: {}\nReturn exactly one JSON object: {{\"focus_summary\":\"...\",\"body\":\"...\"}}. Preserve explicit facts the writer has already given. If the writer states a setting, era, place, or main character, keep those anchors and build on them instead of replacing them. Do not invent a different protagonist, period, or location unless the writer asks for alternatives. The focus_summary should restate the anchored direction in a short phrase.",
+                    "Topic: {:?}\nMode: {:?}\nCurrent focus: {}\nWriter: {}\nReturn exactly one JSON object: {{\"focus_summary\":\"...\",\"body\":\"...\"}}. Preserve the writer's explicit anchors exactly. Do not introduce any new named person, place, culture, religion, profession, or time period that the writer did not mention. If the writer gives a sparse setup, restate the given anchors and ask one grounded next-step question instead of inventing additional story facts. The focus_summary should restate only the anchored direction in a short phrase.",
                     memory.conversation_topic,
                     memory.conversation_mode,
                     memory.current_focus.as_ref().map(|f| f.summary.as_str()).unwrap_or("None"),
                     prompt
                 ),
-                &Self::options(),
+                &Self::context_options(),
             )
             .map_err(|err| err.to_string())?;
         let reply = parse_focus_reply(&format!("{}", response), prompt.trim())?;
@@ -433,6 +439,13 @@ impl FmRsNarrativeEngine {
         GenerationOptions::builder()
             .temperature(0.2)
             .max_response_tokens(512)
+            .build()
+    }
+
+    fn context_options() -> GenerationOptions {
+        GenerationOptions::builder()
+            .temperature(0.0)
+            .max_response_tokens(256)
             .build()
     }
 

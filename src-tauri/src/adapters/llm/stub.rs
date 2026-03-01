@@ -10,8 +10,26 @@ use crate::ports::{
 };
 use uuid::Uuid;
 
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct StubNarrativeEngine;
+
+impl crate::application::DialogueActClassifier for StubNarrativeEngine {
+    fn classify(
+        &self,
+        _context: crate::application::DialogueActContext<'_>,
+    ) -> crate::application::DialogueAct {
+        crate::application::DialogueAct::Brainstorm
+    }
+}
+
+impl crate::ports::NarrativeProvider for StubNarrativeEngine {
+    fn classify_dialogue_act(
+        &self,
+        context: crate::application::DialogueActContext<'_>,
+    ) -> crate::application::DialogueAct {
+        <Self as crate::application::DialogueActClassifier>::classify(self, context)
+    }
+}
 
 impl AssistantAgent for StubNarrativeEngine {
     fn interpret_followup(

@@ -2,7 +2,7 @@ use crate::adapters::db::SqliteScreenplayRepository;
 use crate::application::{
     AssistantCapabilityPlanner, AssistantFallbackResponder, AssistantIntentContext,
     BeliefStateUpdater, CapabilityPlan, CapabilityPlanningContext, DialogueAct,
-    DialogueActClassifier, DialogueActContext, DialogueStateContext, DialogueStateUpdate,
+    DialogueActContext, DialogueStateContext, DialogueStateUpdate,
     MutationGate, NarrativeConversationSupport, NarrativeService, ResponseStateFinalizer,
     ScreenplayService,
 };
@@ -12,8 +12,8 @@ use crate::domain::{
     WorkingMemory,
 };
 use crate::ports::{
-    AssistantAgent, CharacterParser, EventParser, MutationGateway, NarrativeGenerationGateway,
-    NarrativeRepository, NudgeGenerator, QueryGateway, ScreenplayRepository,
+    CharacterParser, EventParser, MutationGateway, NarrativeGenerationGateway,
+    NarrativeProvider, NarrativeRepository, NudgeGenerator, QueryGateway, ScreenplayRepository,
     WorkingMemoryRepository,
 };
 use std::path::Path;
@@ -26,8 +26,7 @@ pub struct AppState {
         Box<dyn EventParser>,
         Box<dyn NudgeGenerator>,
     >,
-    pub assistant_agent: Box<dyn AssistantAgent>,
-    pub dialogue_act_classifier: Box<dyn DialogueActClassifier>,
+    pub narrative_provider: Box<dyn NarrativeProvider>,
     pub belief_state_updater: Box<dyn BeliefStateUpdater>,
     pub assistant_capability_planner: Box<dyn AssistantCapabilityPlanner>,
     pub assistant_fallback_responder: Box<dyn AssistantFallbackResponder>,
@@ -46,7 +45,7 @@ impl AppState {
         sqlite_repository: Option<Arc<SqliteScreenplayRepository>>,
         llm_backend: String,
         llm_detail: String,
-        dialogue_act_classifier: Box<dyn DialogueActClassifier>,
+        narrative_provider: Box<dyn NarrativeProvider>,
         belief_state_updater: Box<dyn BeliefStateUpdater>,
         assistant_capability_planner: Box<dyn AssistantCapabilityPlanner>,
         assistant_fallback_responder: Box<dyn AssistantFallbackResponder>,
@@ -55,7 +54,6 @@ impl AppState {
         character_parser: Box<dyn CharacterParser>,
         event_parser: Box<dyn EventParser>,
         nudge_generator: Box<dyn NudgeGenerator>,
-        assistant_agent: Box<dyn AssistantAgent>,
     ) -> Self {
         Self {
             screenplay_service: ScreenplayService::new(screenplay_repository),
@@ -64,8 +62,7 @@ impl AppState {
                 event_parser,
                 nudge_generator,
             ),
-            assistant_agent,
-            dialogue_act_classifier,
+            narrative_provider,
             belief_state_updater,
             assistant_capability_planner,
             assistant_fallback_responder,
@@ -193,7 +190,7 @@ impl MutationGateway for AppState {
 
 impl NarrativeConversationSupport for AppState {
     fn classify_dialogue_act(&self, context: DialogueActContext<'_>) -> DialogueAct {
-        self.dialogue_act_classifier.classify(context)
+        self.narrative_provider.classify_dialogue_act(context)
     }
 
     fn update_belief_state(&self, context: DialogueStateContext<'_>) -> DialogueStateUpdate {
@@ -247,7 +244,7 @@ impl NarrativeGenerationGateway for AppState {
         prompt: &str,
         memory: &WorkingMemory,
     ) -> Result<crate::ports::FollowUpDirective, String> {
-        self.assistant_agent.interpret_followup(prompt, memory)
+        self.narrative_provider.interpret_followup(prompt, memory)
     }
 
     fn elaborate_focus(
@@ -255,7 +252,7 @@ impl NarrativeGenerationGateway for AppState {
         prompt: &str,
         memory: &WorkingMemory,
     ) -> Result<crate::ports::AssistantResponse, String> {
-        self.assistant_agent.elaborate_focus(prompt, memory)
+        self.narrative_provider.elaborate_focus(prompt, memory)
     }
 
     fn suggest_alternative(
@@ -263,7 +260,7 @@ impl NarrativeGenerationGateway for AppState {
         prompt: &str,
         memory: &WorkingMemory,
     ) -> Result<crate::ports::AssistantResponse, String> {
-        self.assistant_agent.suggest_alternative(prompt, memory)
+        self.narrative_provider.suggest_alternative(prompt, memory)
     }
 
     fn brainstorm_topic(
@@ -271,7 +268,7 @@ impl NarrativeGenerationGateway for AppState {
         prompt: &str,
         memory: &WorkingMemory,
     ) -> Result<crate::ports::AssistantResponse, String> {
-        self.assistant_agent.brainstorm_topic(prompt, memory)
+        self.narrative_provider.brainstorm_topic(prompt, memory)
     }
 
     fn respond_in_context(
@@ -279,7 +276,7 @@ impl NarrativeGenerationGateway for AppState {
         prompt: &str,
         memory: &WorkingMemory,
     ) -> Result<crate::ports::AssistantResponse, String> {
-        self.assistant_agent.respond_in_context(prompt, memory)
+        self.narrative_provider.respond_in_context(prompt, memory)
     }
 
     fn draft_from_focus(
@@ -287,7 +284,7 @@ impl NarrativeGenerationGateway for AppState {
         prompt: &str,
         memory: &WorkingMemory,
     ) -> Result<crate::ports::AssistantResponse, String> {
-        self.assistant_agent.draft_from_focus(prompt, memory)
+        self.narrative_provider.draft_from_focus(prompt, memory)
     }
 }
 
