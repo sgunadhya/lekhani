@@ -1,8 +1,5 @@
-use crate::application::{DialogueAct, DialogueActContext};
-use crate::domain::{
-    AssistantIntent, NarrativeCharacter, NarrativeEvent, NarrativeNudge, NarrativeSnapshot,
-    WorkingMemory,
-};
+use crate::application::{DialogueActContext, TurnInterpretation};
+use crate::domain::{NarrativeCharacter, NarrativeEvent, NarrativeSnapshot, WorkingMemory};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FollowUpDirective {
@@ -18,7 +15,6 @@ pub enum FollowUpDirective {
 
 pub enum AssistantResponse {
     FinalReply {
-        intent: AssistantIntent,
         title: String,
         focus_summary: Option<String>,
         body: String,
@@ -62,15 +58,10 @@ pub trait AssistantAgent: Send + Sync {
         memory: &WorkingMemory,
     ) -> Result<AssistantResponse, String>;
 
-    fn generate_nudge(
-        &self,
-        snapshot: &NarrativeSnapshot,
-        memory: &WorkingMemory,
-    ) -> Result<NarrativeNudge, String>;
 }
 
 pub trait NarrativeProvider: AssistantAgent + Send + Sync {
-    fn classify_dialogue_act(&self, context: DialogueActContext<'_>) -> DialogueAct;
+    fn classify_dialogue_act(&self, context: DialogueActContext<'_>) -> TurnInterpretation;
 }
 
 impl<T: AssistantAgent + ?Sized> AssistantAgent for Box<T> {
@@ -122,17 +113,10 @@ impl<T: AssistantAgent + ?Sized> AssistantAgent for Box<T> {
         (**self).draft_from_focus(prompt, memory)
     }
 
-    fn generate_nudge(
-        &self,
-        snapshot: &NarrativeSnapshot,
-        memory: &WorkingMemory,
-    ) -> Result<NarrativeNudge, String> {
-        (**self).generate_nudge(snapshot, memory)
-    }
 }
 
 impl<T: NarrativeProvider + ?Sized> NarrativeProvider for Box<T> {
-    fn classify_dialogue_act(&self, context: DialogueActContext<'_>) -> DialogueAct {
+    fn classify_dialogue_act(&self, context: DialogueActContext<'_>) -> TurnInterpretation {
         (**self).classify_dialogue_act(context)
     }
 }
@@ -153,10 +137,6 @@ pub trait EventParser: Send + Sync {
     ) -> Result<NarrativeEvent, String>;
 }
 
-pub trait NudgeGenerator: Send + Sync {
-    fn generate_nudge(&self, snapshot: &NarrativeSnapshot) -> Result<NarrativeNudge, String>;
-}
-
 impl<T: CharacterParser + ?Sized> CharacterParser for Box<T> {
     fn parse_character(
         &self,
@@ -174,11 +154,5 @@ impl<T: EventParser + ?Sized> EventParser for Box<T> {
         snapshot: &NarrativeSnapshot,
     ) -> Result<NarrativeEvent, String> {
         (**self).parse_event(description, snapshot)
-    }
-}
-
-impl<T: NudgeGenerator + ?Sized> NudgeGenerator for Box<T> {
-    fn generate_nudge(&self, snapshot: &NarrativeSnapshot) -> Result<NarrativeNudge, String> {
-        (**self).generate_nudge(snapshot)
     }
 }

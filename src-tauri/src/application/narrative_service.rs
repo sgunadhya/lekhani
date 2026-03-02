@@ -1,31 +1,28 @@
 use crate::domain::{
     NarrativeChangeKind, NarrativeChangeSummary, NarrativeCharacter, NarrativeCommitTarget,
-    NarrativeEvent, NarrativeMessagePreview, NarrativeNudge, NarrativeSnapshot,
+    NarrativeEvent, NarrativeMessagePreview, NarrativeSnapshot,
     OntologyRelationship, OntologyRelationshipKind,
 };
-use crate::ports::{CharacterParser, EventParser, NudgeGenerator};
+use crate::ports::{CharacterParser, EventParser};
 
-pub struct NarrativeService<C, E, N> {
+pub struct NarrativeService<C, E> {
     character_parser: C,
     event_parser: E,
-    nudge_generator: N,
 }
 
-impl<C, E, N> NarrativeService<C, E, N> {
-    pub fn new(character_parser: C, event_parser: E, nudge_generator: N) -> Self {
+impl<C, E> NarrativeService<C, E> {
+    pub fn new(character_parser: C, event_parser: E) -> Self {
         Self {
             character_parser,
             event_parser,
-            nudge_generator,
         }
     }
 }
 
-impl<C, E, N> NarrativeService<C, E, N>
+impl<C, E> NarrativeService<C, E>
 where
     C: CharacterParser,
     E: EventParser,
-    N: NudgeGenerator,
 {
     pub fn parse_character(
         &self,
@@ -41,10 +38,6 @@ where
         snapshot: &NarrativeSnapshot,
     ) -> Result<NarrativeEvent, String> {
         self.event_parser.parse_event(description, snapshot)
-    }
-
-    pub fn get_nudge(&self, snapshot: &NarrativeSnapshot) -> Result<NarrativeNudge, String> {
-        self.nudge_generator.generate_nudge(snapshot)
     }
 
     pub fn preview_message(

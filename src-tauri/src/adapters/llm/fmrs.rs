@@ -6,14 +6,16 @@ use serde_json::json;
 use uuid::Uuid;
 
 use super::StubNarrativeEngine;
-use crate::application::{DialogueAct, DialogueActClassifier, DialogueActContext};
+use crate::application::{
+    DialogueAct, DialogueActClassifier, DialogueActContext, InterpretationTarget,
+    TurnInterpretation, TurnRoute,
+};
 use crate::domain::{
-    AssistantIntent, NarrativeCharacter, NarrativeEvent, NarrativeNudge, NarrativeSnapshot,
+    ConversationTopic, NarrativeCharacter, NarrativeEvent, NarrativeSnapshot,
     WorkingMemory,
 };
 use crate::ports::{
     AssistantAgent, AssistantResponse, CharacterParser, EventParser, FollowUpDirective,
-    NudgeGenerator,
 };
 
 #[derive(Clone)]
@@ -22,14 +24,14 @@ pub struct FmRsNarrativeEngine {
 }
 
 impl DialogueActClassifier for FmRsNarrativeEngine {
-    fn classify(&self, context: DialogueActContext<'_>) -> DialogueAct {
+    fn classify(&self, context: DialogueActContext<'_>) -> TurnInterpretation {
         let session = match Session::with_instructions(&self.model, DIALOGUE_ACT_SYSTEM_PROMPT) {
             Ok(session) => session,
-            Err(_) => return DialogueAct::Brainstorm,
+            Err(_) => return default_interpretation(),
         };
         let response = match session.respond(
             &format!(
-                "Prompt: {}\nCurrent mode: {:?}\nCurrent focus: {}\nReturn exactly one JSON object: {{\"dialogue_act\":\"Query|Brainstorm|Constraint|Correction|Confirmation|Commit|RewriteRequest\"}}",
+                "Prompt: {}\nCurrent mode: {:?}\nCurrent focus: {}\nReturn exactly one JSON object with keys dialogue_act, target, route, confidence.",
                 context.prompt,
                 context.memory.conversation_mode,
                 context.memory.current_focus.as_ref().map(|f| f.summary.as_str()).unwrap_or("None")
@@ -37,30 +39,18 @@ impl DialogueActClassifier for FmRsNarrativeEngine {
             &Self::options(),
         ) {
             Ok(response) => response,
-            Err(_) => return DialogueAct::Brainstorm,
+            Err(_) => return default_interpretation(),
         };
         let value = match parse_single_json_object(&format!("{}", response)) {
             Ok(value) => value,
-            Err(_) => return DialogueAct::Brainstorm,
+            Err(_) => return default_interpretation(),
         };
-        match value
-            .get("dialogue_act")
-            .and_then(|v| v.as_str())
-            .unwrap_or("Brainstorm")
-        {
-            "Query" => DialogueAct::Query,
-            "Constraint" => DialogueAct::Constraint,
-            "Correction" => DialogueAct::Correction,
-            "Confirmation" => DialogueAct::Confirmation,
-            "Commit" => DialogueAct::Commit,
-            "RewriteRequest" => DialogueAct::RewriteRequest,
-            _ => DialogueAct::Brainstorm,
-        }
+        interpretation_from_value(&value)
     }
 }
 
 impl crate::ports::NarrativeProvider for FmRsNarrativeEngine {
-    fn classify_dialogue_act(&self, context: DialogueActContext<'_>) -> DialogueAct {
+    fn classify_dialogue_act(&self, context: DialogueActContext<'_>) -> TurnInterpretation {
         <Self as DialogueActClassifier>::classify(self, context)
     }
 }
@@ -132,7 +122,6 @@ impl AssistantAgent for FmRsNarrativeEngine {
             .map_err(|err| err.to_string())?;
         let reply = parse_focus_reply(&format!("{}", response), focus)?;
         Ok(AssistantResponse::FinalReply {
-            intent: AssistantIntent::Guide,
             title: "Idea".to_string(),
             focus_summary: Some(reply.focus_summary),
             body: clean_conversational_text(&reply.body),
@@ -172,7 +161,6 @@ impl AssistantAgent for FmRsNarrativeEngine {
             .map_err(|err| err.to_string())?;
         let reply = parse_focus_reply(&format!("{}", response), "alternative idea")?;
         Ok(AssistantResponse::FinalReply {
-            intent: AssistantIntent::Guide,
             title: "Idea".to_string(),
             focus_summary: Some(reply.focus_summary),
             body: clean_conversational_text(&reply.body),
@@ -210,7 +198,6 @@ impl AssistantAgent for FmRsNarrativeEngine {
             .map_err(|err| err.to_string())?;
         let reply = parse_focus_reply(&format!("{}", response), "story idea")?;
         Ok(AssistantResponse::FinalReply {
-            intent: AssistantIntent::Guide,
             title: "Idea".to_string(),
             focus_summary: Some(reply.focus_summary),
             body: clean_conversational_text(&reply.body),
@@ -238,7 +225,6 @@ impl AssistantAgent for FmRsNarrativeEngine {
             .map_err(|err| err.to_string())?;
         let reply = parse_focus_reply(&format!("{}", response), prompt.trim())?;
         Ok(AssistantResponse::FinalReply {
-            intent: AssistantIntent::Guide,
             title: "Story Direction".to_string(),
             focus_summary: Some(reply.focus_summary),
             body: clean_conversational_text(&reply.body),
@@ -268,45 +254,15 @@ impl AssistantAgent for FmRsNarrativeEngine {
             .map_err(|err| err.to_string())?;
         let reply = parse_focus_reply(&format!("{}", response), focus)?;
         Ok(AssistantResponse::FinalReply {
-            intent: AssistantIntent::MutateDocument,
             title: "Screenplay Draft".to_string(),
             focus_summary: Some(reply.focus_summary),
             body: clean_conversational_text(&reply.body),
         })
     }
-
-    fn generate_nudge(
-        &self,
-        snapshot: &NarrativeSnapshot,
-        memory: &WorkingMemory,
-    ) -> Result<NarrativeNudge, String> {
-        let session = Session::with_instructions(&self.model, NUDGE_SYSTEM_PROMPT)
-            .map_err(|err| err.to_string())?;
-
-        let open_tasks: Vec<_> = memory.story_backlog.iter()
-            .filter(|t| matches!(t.status, crate::domain::TaskStatus::Open))
-            .map(|t| &t.description)
-            .collect();
-
-        let prompt = format!(
-            "Open Goals: {:?}\nModel Status: {} characters, {} events.\nNudge:",
-            open_tasks,
-            snapshot.characters.len(),
-            snapshot.events.len()
-        );
-
-        let response = session
-            .respond(&prompt, &Self::options())
-            .map_err(|err| err.to_string())?;
-
-        Ok(NarrativeNudge {
-            message: format!("{}", response).trim().to_string(),
-        })
-    }
 }
 
 const DIALOGUE_ACT_SYSTEM_PROMPT: &str = r#"Classify the writer's turn for a story-building assistant.
-Return exactly one JSON object: {"dialogue_act":"Query|Brainstorm|Constraint|Correction|Confirmation|Commit|RewriteRequest"}.
+Return exactly one JSON object: {"dialogue_act":"Query|Brainstorm|Constraint|Correction|Confirmation|Commit|RewriteRequest","target":"current_candidate|setting|character|event|relationship|screenplay|general","route":"Continue|ElaborateCurrent|AlternativeCurrent|ConfirmCurrent|RejectCurrent|ShiftToCharacter|ShiftToEvent|AddToScreenplay","confidence":0.0}.
 Use:
 - Query: asks for more, asks a question, or asks to continue/refine
 - Brainstorm: asks for an idea or option
@@ -314,7 +270,10 @@ Use:
 - Correction: corrects an earlier assumption
 - Confirmation: accepts the current idea
 - Commit: provides concrete story structure to record
-- RewriteRequest: asks to turn an idea into screenplay text"#;
+- RewriteRequest: asks to turn an idea into screenplay text
+Choose target based on what the writer is acting on.
+Choose route based on the most likely next conversational move relative to the current thread or candidate.
+Confidence should be between 0 and 1."#;
 
 const FOLLOWUP_INTERPRETER_SYSTEM_PROMPT: &str = r#"You classify follow-up intent for an active story conversation.
 Return exactly one JSON object: {"directive":"ElaborateCurrent|AlternativeOption|ConfirmCurrent|RejectCurrent|ShiftToCharacter|ShiftToEvent|AddToScreenplay|Unknown"}.
@@ -363,8 +322,6 @@ Stay faithful to the current focus.
 Do not introduce a different direction.
 Do not use conversational preambles or explanations.
 Write 3-6 concise sentences."#;
-
-const NUDGE_SYSTEM_PROMPT: &str = "You are a story coach. Based on the state, give a friendly 1-sentence nudge to keep the user writing.";
 
 fn parse_single_json_object(text: &str) -> Result<serde_json::Value, String> {
     if let Ok(value) = serde_json::from_str::<serde_json::Value>(text) {
@@ -425,6 +382,65 @@ fn parse_focus_reply(text: &str, fallback_focus: &str) -> Result<FocusReply, Str
     Ok(FocusReply { focus_summary, body })
 }
 
+fn default_interpretation() -> TurnInterpretation {
+    TurnInterpretation {
+        dialogue_act: DialogueAct::Brainstorm,
+        target: InterpretationTarget::General,
+        route: TurnRoute::Continue,
+        confidence: 0.0,
+    }
+}
+
+fn interpretation_from_value(value: &serde_json::Value) -> TurnInterpretation {
+    let dialogue_act = match value
+        .get("dialogue_act")
+        .and_then(|v| v.as_str())
+        .unwrap_or("Brainstorm")
+    {
+        "Query" => DialogueAct::Query,
+        "Constraint" => DialogueAct::Constraint,
+        "Correction" => DialogueAct::Correction,
+        "Confirmation" => DialogueAct::Confirmation,
+        "Commit" => DialogueAct::Commit,
+        "RewriteRequest" => DialogueAct::RewriteRequest,
+        _ => DialogueAct::Brainstorm,
+    };
+
+    let target = match value.get("target").and_then(|v| v.as_str()) {
+        Some("current_candidate") => InterpretationTarget::CurrentCandidate,
+        Some("screenplay") => InterpretationTarget::Screenplay,
+        Some("setting") => InterpretationTarget::NewTopic(ConversationTopic::Setting),
+        Some("character") => InterpretationTarget::NewTopic(ConversationTopic::Character),
+        Some("event") => InterpretationTarget::NewTopic(ConversationTopic::Event),
+        Some("relationship") => InterpretationTarget::NewTopic(ConversationTopic::Relationship),
+        _ => InterpretationTarget::General,
+    };
+
+    let confidence = value
+        .get("confidence")
+        .and_then(|v| v.as_f64())
+        .map(|v| v.clamp(0.0, 1.0) as f32)
+        .unwrap_or(0.5);
+
+    let route = match value.get("route").and_then(|v| v.as_str()) {
+        Some("ElaborateCurrent") => TurnRoute::ElaborateCurrent,
+        Some("AlternativeCurrent") => TurnRoute::AlternativeCurrent,
+        Some("ConfirmCurrent") => TurnRoute::ConfirmCurrent,
+        Some("RejectCurrent") => TurnRoute::RejectCurrent,
+        Some("ShiftToCharacter") => TurnRoute::ShiftToCharacter,
+        Some("ShiftToEvent") => TurnRoute::ShiftToEvent,
+        Some("AddToScreenplay") => TurnRoute::AddToScreenplay,
+        _ => TurnRoute::Continue,
+    };
+
+    TurnInterpretation {
+        dialogue_act,
+        target,
+        route,
+        confidence,
+    }
+}
+
 impl FmRsNarrativeEngine {
     pub fn new() -> Result<Self, String> {
         let model = SystemLanguageModel::new().map_err(|err| err.to_string())?;
@@ -457,9 +473,6 @@ impl FmRsNarrativeEngine {
         Session::with_instructions(&self.model, EVENT_INSTRUCTIONS).map_err(|err| err.to_string())
     }
 
-    fn nudge_session(&self) -> Result<Session, String> {
-        Session::with_instructions(&self.model, NUDGE_INSTRUCTIONS).map_err(|err| err.to_string())
-    }
 }
 
 impl CharacterParser for FmRsNarrativeEngine {
@@ -533,34 +546,6 @@ impl EventParser for FmRsNarrativeEngine {
     }
 }
 
-impl NudgeGenerator for FmRsNarrativeEngine {
-    fn generate_nudge(&self, snapshot: &NarrativeSnapshot) -> Result<NarrativeNudge, String> {
-        let payload = self
-            .nudge_session()
-            .and_then(|session| {
-                session
-                    .respond_json(
-                        &build_nudge_prompt(snapshot),
-                        &nudge_schema(),
-                        &Self::options(),
-                    )
-                    .map_err(|err| err.to_string())
-            })
-            .ok();
-        let message = payload
-            .as_deref()
-            .and_then(parse_nudge_message)
-            .or_else(|| heuristic_nudge(snapshot))
-            .or_else(|| NudgeGenerator::generate_nudge(&StubNarrativeEngine, snapshot).ok().map(|nudge| nudge.message));
-
-        Ok(NarrativeNudge {
-            message: message.ok_or_else(|| {
-                "Foundation Models returned a nudge payload without a usable message".to_string()
-            })?,
-        })
-    }
-}
-
 #[derive(Debug, Deserialize)]
 struct CharacterHydration {
     name: String,
@@ -584,12 +569,6 @@ const EVENT_INSTRUCTIONS: &str = r#"You are Lekhani's narrative hydration engine
 Extract one event object from the user's text.
 Use existing character names when the user refers to known characters.
 Return participant_names as exact names from the known-character list whenever possible.
-Return only valid JSON matching the schema."#;
-
-const NUDGE_INSTRUCTIONS: &str = r#"You are Lekhani's narrative guide.
-Given the current model snapshot, return exactly one concise next-step nudge for the user.
-The nudge must target the most important missing narrative information.
-Use a top-level field named message.
 Return only valid JSON matching the schema."#;
 
 fn character_schema() -> serde_json::Value {
@@ -622,16 +601,6 @@ fn event_schema() -> serde_json::Value {
     })
 }
 
-fn nudge_schema() -> serde_json::Value {
-    json!({
-        "type": "object",
-        "properties": {
-            "message": { "type": "string" }
-        },
-        "required": ["message"]
-    })
-}
-
 fn build_character_prompt(description: &str, snapshot: &NarrativeSnapshot) -> String {
     format!(
         "Known characters:\n{}\n\nKnown events:\n{}\n\nUser input:\n{}\n\nExtract a single character object.",
@@ -647,17 +616,6 @@ fn build_event_prompt(description: &str, snapshot: &NarrativeSnapshot) -> String
         format_character_list(snapshot),
         format_event_list(snapshot),
         description.trim()
-    )
-}
-
-fn build_nudge_prompt(snapshot: &NarrativeSnapshot) -> String {
-    format!(
-        "Known characters:\n{}\n\nKnown events:\n{}\n\nMetrics:\nscene_count={} character_count={} event_count={}\n\nReturn the single best next-step nudge.",
-        format_character_list(snapshot),
-        format_event_list(snapshot),
-        snapshot.metrics.scene_count,
-        snapshot.metrics.character_count,
-        snapshot.metrics.event_count,
     )
 }
 
@@ -706,43 +664,4 @@ fn resolve_participants(names: &[String], snapshot: &NarrativeSnapshot) -> Vec<U
                 })
         })
         .collect()
-}
-
-fn parse_nudge_message(payload: &str) -> Option<String> {
-    let value: serde_json::Value = serde_json::from_str(payload).ok()?;
-    extract_string_value(&value)
-}
-
-fn extract_string_value(value: &serde_json::Value) -> Option<String> {
-    match value {
-        serde_json::Value::String(text) => {
-            let text = text.trim().to_string();
-            (!text.is_empty()).then_some(text)
-        }
-        serde_json::Value::Object(map) => {
-            for key in ["message", "next_nudge", "nudge", "guidance", "reason", "text"] {
-                if let Some(found) = map.get(key).and_then(extract_string_value) {
-                    return Some(found);
-                }
-            }
-
-            map.values().find_map(extract_string_value)
-        }
-        serde_json::Value::Array(items) => items.iter().find_map(extract_string_value),
-        _ => None,
-    }
-}
-
-fn heuristic_nudge(snapshot: &NarrativeSnapshot) -> Option<String> {
-    if snapshot.characters.is_empty() {
-        Some("Define the protagonist in one sentence with a clear desire and pressure.".to_string())
-    } else if snapshot.events.is_empty() {
-        Some("Describe the first event that forces the protagonist to act.".to_string())
-    } else if snapshot.events.iter().all(|event| event.participants.is_empty()) {
-        Some("Link at least one tracked character to a narrative event so the model can reason about scene participation.".to_string())
-    } else if snapshot.characters.len() == 1 {
-        Some("Add a counter-force or ally so the story model has a relationship to reason about.".to_string())
-    } else {
-        Some("Clarify the turning point that changes the protagonist's options in the next sequence.".to_string())
-    }
 }

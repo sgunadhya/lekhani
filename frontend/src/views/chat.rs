@@ -1,12 +1,13 @@
 use crate::api::dto::{
-    AssistantIntentDto, ConstraintScopeDto, ConversationModeDto, ConversationTopicDto,
-    FocusKindDto, NarrativeSuggestedActionViewDto, NarrativeSuggestionActionDto, TaskStatusDto,
+    AssistantIntentDto, BeatIdDto, ConversationModeDto, ConversationTopicDto,
+    InterpretationTargetDto, NarrativeModeDto, NarrativeSuggestedActionViewDto,
+    NarrativeSuggestionActionDto, TaskStatusDto, ThreadScopeDto, ThreadStatusDto, TurnRouteDto,
     WorkingMemoryDto,
 };
 use crate::state::document::DocumentContext;
 use crate::state::narrative::{
-    create_llm_status_resource, create_nudge_resource, create_suggestion_action,
-    create_turn_action, ChatMessage, ChatRole, NarrativeChatContext,
+    create_llm_status_resource, create_suggestion_action, create_turn_action, ChatMessage,
+    ChatRole, NarrativeChatContext,
 };
 use leptos::*;
 
@@ -16,9 +17,7 @@ pub fn ChatInterface() -> impl IntoView {
     let chat = use_context::<NarrativeChatContext>().expect("narrative chat context should exist");
     let prompt = Signal::derive(move || chat.prompt.get());
     let set_prompt = move |value: String| chat.prompt.set(value);
-    let (nudge_nonce, set_nudge_nonce) = create_signal(0_u64);
     let llm_status = create_llm_status_resource();
-    let nudge = create_nudge_resource(nudge_nonce);
     let turn_action = create_turn_action();
     let suggestion_action = create_suggestion_action();
 
@@ -41,9 +40,18 @@ pub fn ChatInterface() -> impl IntoView {
     };
 
     let apply_turn = move |turn: crate::api::dto::AssistantTurnDto| {
-        set_nudge_nonce.update(|value| *value += 1);
         chat.working_memory.set(Some(turn.working_memory.clone()));
         chat.last_intent.set(Some(turn.intent.clone()));
+        chat.last_mode.set(Some(turn.narrative_mode.clone()));
+        chat.last_thread_status.set(Some(turn.thread_status.clone()));
+        chat.last_interpretation_target
+            .set(Some(turn.interpretation_target.clone()));
+        chat.last_interpretation_route
+            .set(Some(turn.interpretation_route.clone()));
+        chat.last_interpretation_confidence
+            .set(Some(turn.interpretation_confidence));
+        chat.last_beat.set(turn.active_beat.clone());
+        chat.last_evaluation_nudge.set(turn.evaluation_nudge.clone());
         chat.suggested_actions.set(turn.suggested_actions.clone());
         let committed = turn.committed;
         let prompt = committed.prompt.trim().to_string();
@@ -148,6 +156,57 @@ pub fn ChatInterface() -> impl IntoView {
                         </div>
                     }.into_view(),
                 }}
+                <div class="narrative-context-grid">
+                    {move || {
+                        let mode = chat.last_mode.get();
+                        let status = chat.last_thread_status.get();
+                        let target = chat.last_interpretation_target.get();
+                        let route = chat.last_interpretation_route.get();
+                        let confidence = chat.last_interpretation_confidence.get();
+                        let beat = chat.last_beat.get();
+
+                        if mode.is_none() && status.is_none() && beat.is_none() && target.is_none() && route.is_none() {
+                            view! { <div></div> }.into_view()
+                        } else {
+                            view! {
+                                <section class="narrative-context-panel">
+                                    <span class="eyebrow">"Interaction state"</span>
+                                    <p class="narrative-context-value">
+                                        {interaction_state_label(mode.as_ref(), status.as_ref())}
+                                    </p>
+                                    {beat.map(|beat| {
+                                        view! {
+                                            <p class="muted narrative-context-note">
+                                                {format!("Beat: {}", beat_label(&beat))}
+                                            </p>
+                                        }
+                                    })}
+                                    {target.map(|target| {
+                                        view! {
+                                            <p class="muted narrative-context-note">
+                                                {format!(
+                                                    "Interpretation: {}{}",
+                                                    interpretation_target_label(&target),
+                                                    confidence
+                                                        .map(|value| format!(" ({:.0}%)", value * 100.0))
+                                                        .unwrap_or_default()
+                                                )}
+                                            </p>
+                                        }
+                                    })}
+                                    {route.map(|route| {
+                                        view! {
+                                            <p class="muted narrative-context-note">
+                                                {format!("Route: {}", turn_route_label(&route))}
+                                            </p>
+                                        }
+                                    })}
+                                </section>
+                            }
+                                .into_view()
+                        }
+                    }}
+                </div>
             </div>
 
             {move || {
@@ -169,10 +228,13 @@ pub fn ChatInterface() -> impl IntoView {
 
             <div class="narrative-nudge-strip">
                 <span class="eyebrow">"Next nudge"</span>
-                {move || match nudge.get() {
-                    None => view! { <p class="muted">"Thinking about the next useful move..."</p> }.into_view(),
-                    Some(Ok(nudge)) => view! { <p>{nudge.message}</p> }.into_view(),
-                    Some(Err(err)) => view! { <p class="error">{err}</p> }.into_view(),
+                {move || {
+                    if let Some(nudge) = chat.last_evaluation_nudge.get() {
+                        view! { <p>{nudge}</p> }.into_view()
+                    } else {
+                        view! { <p class="muted">"Take one more turn to surface the next move."</p> }
+                            .into_view()
+                    }
                 }}
             </div>
 
@@ -254,7 +316,17 @@ fn render_suggested_action(
 
 fn render_working_memory(memory: &WorkingMemoryDto) -> impl IntoView {
     let current_thread = current_thread_label(memory);
-    let anchor = memory.current_focus.as_ref().map(|focus| focus.summary.clone());
+    let thread_status = current_thread_status_label(&memory.current_thread.status);
+    let thread_scope = thread_scope_label(&memory.current_thread.scope);
+    let anchor = memory
+        .current_thread
+        .current_focus
+        .as_ref()
+        .map(|focus| focus.summary.clone());
+    let return_thread = memory
+        .return_thread
+        .as_ref()
+        .map(|thread| thread_label(thread));
     let active_constraint = memory
         .constraints
         .iter()
@@ -280,7 +352,19 @@ fn render_working_memory(memory: &WorkingMemoryDto) -> impl IntoView {
                 <span class="eyebrow">"Current thread"</span>
                 <p class="narrative-context-value">{current_thread}</p>
                 <p class="muted narrative-context-note">{conversation_mode_label(&memory.conversation_mode)}</p>
+                <p class="muted narrative-context-note">{thread_status}</p>
+                <p class="muted narrative-context-note">{thread_scope}</p>
+                <p class="muted narrative-context-note">{format!("Turn {}", memory.current_thread.turn_count.max(memory.turn_count))}</p>
             </section>
+
+            {return_thread.map(|goal| {
+                view! {
+                    <section class="narrative-context-panel">
+                        <span class="eyebrow">"Return thread"</span>
+                        <p class="narrative-context-value">{goal}</p>
+                    </section>
+                }
+            })}
 
             {anchor.map(|anchor| {
                 view! {
@@ -322,7 +406,15 @@ fn render_working_memory(memory: &WorkingMemoryDto) -> impl IntoView {
 }
 
 fn current_thread_label(memory: &WorkingMemoryDto) -> String {
-    match memory.conversation_topic {
+    thread_label(&memory.current_thread)
+}
+
+fn thread_label(thread: &crate::api::dto::NarrativeThreadDto) -> String {
+    if !thread.goal.trim().is_empty() {
+        return thread.goal.clone();
+    }
+
+    match thread.topic {
         ConversationTopicDto::Setting => return "Setting".to_string(),
         ConversationTopicDto::Character => return "Character".to_string(),
         ConversationTopicDto::Event => return "Event".to_string(),
@@ -330,31 +422,22 @@ fn current_thread_label(memory: &WorkingMemoryDto) -> String {
         ConversationTopicDto::General => {}
     }
 
-    if let Some(focus) = &memory.current_focus {
-        return match focus.kind {
-            FocusKindDto::Character => "Character".to_string(),
-            FocusKindDto::Event => "Event".to_string(),
-            FocusKindDto::Relationship => "Relationship".to_string(),
-            FocusKindDto::Scene => "Scene".to_string(),
-            FocusKindDto::Structure => "Structure".to_string(),
-            FocusKindDto::LintResolution => "Lint".to_string(),
-            FocusKindDto::OpenQuestion => "Open question".to_string(),
-        };
-    }
-
-    if let Some(constraint) = memory.constraints.first() {
-        return match constraint.scope {
-            ConstraintScopeDto::Setting => "Setting".to_string(),
-            ConstraintScopeDto::Character => "Character".to_string(),
-            ConstraintScopeDto::Event => "Event".to_string(),
-            ConstraintScopeDto::Relationship => "Relationship".to_string(),
-            ConstraintScopeDto::Tone => "Tone".to_string(),
-            ConstraintScopeDto::Structure => "Structure".to_string(),
-            ConstraintScopeDto::General => "Story".to_string(),
-        };
-    }
-
     "Story".to_string()
+}
+
+fn current_thread_status_label(status: &crate::api::dto::NarrativeThreadStatusDto) -> &'static str {
+    match status {
+        crate::api::dto::NarrativeThreadStatusDto::Active => "Active thread",
+        crate::api::dto::NarrativeThreadStatusDto::Parked => "Parked thread",
+        crate::api::dto::NarrativeThreadStatusDto::Committed => "Committed thread",
+    }
+}
+
+fn thread_scope_label(scope: &ThreadScopeDto) -> &'static str {
+    match scope {
+        ThreadScopeDto::Main => "Main thread",
+        ThreadScopeDto::Sidequest => "Sidequest",
+    }
 }
 
 fn conversation_mode_label(mode: &ConversationModeDto) -> &'static str {
@@ -362,6 +445,81 @@ fn conversation_mode_label(mode: &ConversationModeDto) -> &'static str {
         ConversationModeDto::Brainstorming => "Exploring ideas",
         ConversationModeDto::Refining => "Refining the current idea",
         ConversationModeDto::Committing => "Recording the current direction",
+    }
+}
+
+fn interaction_state_label(
+    mode: Option<&NarrativeModeDto>,
+    status: Option<&ThreadStatusDto>,
+) -> String {
+    let mode = mode.map(narrative_mode_label).unwrap_or("Unknown mode");
+    let status = status.map(thread_status_label).unwrap_or("Unknown status");
+    format!("{mode} · {status}")
+}
+
+fn narrative_mode_label(mode: &NarrativeModeDto) -> &'static str {
+    match mode {
+        NarrativeModeDto::Idle => "Idle",
+        NarrativeModeDto::Brainstorming => "Brainstorming",
+        NarrativeModeDto::Converging => "Converging",
+        NarrativeModeDto::Elaborating => "Elaborating",
+        NarrativeModeDto::Committing => "Committing",
+        NarrativeModeDto::TunnelingSidequest => "Sidequest",
+        NarrativeModeDto::Drifting => "Drifting",
+    }
+}
+
+fn thread_status_label(status: &ThreadStatusDto) -> &'static str {
+    match status {
+        ThreadStatusDto::Active => "Active",
+        ThreadStatusDto::Drifting => "Drifting",
+        ThreadStatusDto::Converging => "Converging",
+        ThreadStatusDto::Stalled => "Stalled",
+    }
+}
+
+fn beat_label(beat: &BeatIdDto) -> &'static str {
+    match beat {
+        BeatIdDto::CandidateReady => "Candidate ready",
+        BeatIdDto::DriftDetected => "Drift detected",
+        BeatIdDto::ReadyToCommit => "Ready to commit",
+        BeatIdDto::Stalled => "Stalled",
+        BeatIdDto::SidequestOpened => "Sidequest opened",
+        BeatIdDto::SidequestCloseable => "Sidequest closeable",
+    }
+}
+
+fn interpretation_target_label(target: &InterpretationTargetDto) -> String {
+    match target {
+        InterpretationTargetDto::CurrentCandidate => "current candidate".to_string(),
+        InterpretationTargetDto::NewTopic(topic) => {
+            format!("new {}", current_topic_label(topic))
+        }
+        InterpretationTargetDto::Screenplay => "screenplay".to_string(),
+        InterpretationTargetDto::General => "general".to_string(),
+    }
+}
+
+fn turn_route_label(route: &TurnRouteDto) -> &'static str {
+    match route {
+        TurnRouteDto::Continue => "continue",
+        TurnRouteDto::ElaborateCurrent => "elaborate current",
+        TurnRouteDto::AlternativeCurrent => "try alternative",
+        TurnRouteDto::ConfirmCurrent => "confirm current",
+        TurnRouteDto::RejectCurrent => "reject current",
+        TurnRouteDto::ShiftToCharacter => "shift to character",
+        TurnRouteDto::ShiftToEvent => "shift to event",
+        TurnRouteDto::AddToScreenplay => "add to screenplay",
+    }
+}
+
+fn current_topic_label(topic: &ConversationTopicDto) -> &'static str {
+    match topic {
+        ConversationTopicDto::Setting => "setting",
+        ConversationTopicDto::Character => "character",
+        ConversationTopicDto::Event => "event",
+        ConversationTopicDto::Relationship => "relationship",
+        ConversationTopicDto::General => "story topic",
     }
 }
 

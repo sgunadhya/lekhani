@@ -1,11 +1,11 @@
 use crate::domain::{
     AssistantCapability, AssistantIntent, Constraint, ConstraintOperator, ConstraintScope,
-    ConstraintStatus, ConversationMode, ConversationTopic, FocusItem, FocusKind,
-    NarrativeMessagePreview, OpenQuestion, RecentCorrection, WorkingMemory, WritePolicy,
+    ConstraintStatus, ConversationMode, ConversationTopic, FocusItem, FocusKind, NarrativeMessagePreview,
+    NarrativeThreadStatus, OpenQuestion, RecentCorrection, WorkingMemory,
 };
-use crate::ports::AssistantResponse;
+use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum DialogueAct {
     Query,
     Brainstorm,
@@ -16,35 +16,52 @@ pub enum DialogueAct {
     RewriteRequest,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum InterpretationTarget {
+    CurrentCandidate,
+    NewTopic(ConversationTopic),
+    Screenplay,
+    General,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum TurnRoute {
+    Continue,
+    ElaborateCurrent,
+    AlternativeCurrent,
+    ConfirmCurrent,
+    RejectCurrent,
+    ShiftToCharacter,
+    ShiftToEvent,
+    AddToScreenplay,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TurnInterpretation {
+    pub dialogue_act: DialogueAct,
+    pub target: InterpretationTarget,
+    pub route: TurnRoute,
+    pub confidence: f32,
+}
+
 pub struct DialogueActContext<'a> {
     pub prompt: &'a str,
-    pub preview: &'a NarrativeMessagePreview,
     pub memory: &'a WorkingMemory,
 }
 
 pub trait DialogueActClassifier: Send + Sync {
-    fn classify(&self, context: DialogueActContext<'_>) -> DialogueAct;
-}
-
-pub struct AssistantIntentContext<'a> {
-    pub prompt: &'a str,
-    pub preview: &'a NarrativeMessagePreview,
-}
-
-pub trait MutationGate: Send + Sync {
-    fn allow_mutation(&self, context: AssistantIntentContext<'_>) -> bool;
+    fn classify(&self, context: DialogueActContext<'_>) -> TurnInterpretation;
 }
 
 pub struct DialogueStateContext<'a> {
     pub prompt: &'a str,
     pub preview: &'a NarrativeMessagePreview,
     pub memory: &'a WorkingMemory,
-    pub dialogue_act: &'a DialogueAct,
+    pub interpretation: &'a TurnInterpretation,
 }
 
 pub struct DialogueStateUpdate {
     pub working_memory: WorkingMemory,
-    pub force_no_write: bool,
 }
 
 pub trait BeliefStateUpdater: Send + Sync {
@@ -54,28 +71,17 @@ pub trait BeliefStateUpdater: Send + Sync {
 pub struct CapabilityPlanningContext<'a> {
     pub prompt: &'a str,
     pub preview: &'a NarrativeMessagePreview,
-    pub dialogue_act: &'a DialogueAct,
+    pub interpretation: &'a TurnInterpretation,
     pub mutation_allowed: bool,
 }
 
 pub struct CapabilityPlan {
     pub intent: AssistantIntent,
     pub capabilities: Vec<AssistantCapability>,
-    pub write_policy: WritePolicy,
 }
 
 pub trait AssistantCapabilityPlanner: Send + Sync {
     fn plan(&self, context: CapabilityPlanningContext<'_>) -> CapabilityPlan;
-}
-
-pub trait AssistantFallbackResponder: Send + Sync {
-    fn respond(
-        &self,
-        prompt: &str,
-        preview: &NarrativeMessagePreview,
-        memory: &WorkingMemory,
-        plan: &CapabilityPlan,
-    ) -> AssistantResponse;
 }
 
 pub trait ResponseStateFinalizer: Send + Sync {
@@ -91,17 +97,9 @@ pub trait ResponseStateFinalizer: Send + Sync {
 }
 
 pub trait NarrativeConversationSupport: Send + Sync {
-    fn classify_dialogue_act(&self, context: DialogueActContext<'_>) -> DialogueAct;
+    fn classify_dialogue_act(&self, context: DialogueActContext<'_>) -> TurnInterpretation;
     fn update_belief_state(&self, context: DialogueStateContext<'_>) -> DialogueStateUpdate;
     fn plan_capabilities(&self, context: CapabilityPlanningContext<'_>) -> CapabilityPlan;
-    fn allow_mutation(&self, context: AssistantIntentContext<'_>) -> bool;
-    fn fallback_response(
-        &self,
-        prompt: &str,
-        preview: &NarrativeMessagePreview,
-        memory: &WorkingMemory,
-        plan: &CapabilityPlan,
-    ) -> AssistantResponse;
     fn finalize_response_state(
         &self,
         memory: WorkingMemory,
@@ -117,46 +115,17 @@ pub fn is_underspecified_followup(prompt: &str, preview: &NarrativeMessagePrevie
     is_low_information_followup(prompt, preview)
 }
 
-pub struct NeutralDialogueActClassifier;
-pub struct HeuristicMutationGate;
 pub struct HeuristicBeliefStateUpdater;
 pub struct HeuristicAssistantCapabilityPlanner;
-pub struct HeuristicAssistantFallbackResponder;
 pub struct HeuristicResponseStateFinalizer;
-
-impl DialogueActClassifier for NeutralDialogueActClassifier {
-    fn classify(&self, _context: DialogueActContext<'_>) -> DialogueAct {
-        DialogueAct::Brainstorm
-    }
-}
-
-impl MutationGate for HeuristicMutationGate {
-    fn allow_mutation(&self, context: AssistantIntentContext<'_>) -> bool {
-        if context.preview.changes.is_empty() {
-            return false;
-        }
-
-        let prompt_tokens = meaningful_tokens(context.prompt);
-        if prompt_tokens.is_empty() {
-            return false;
-        }
-
-        context
-            .preview
-            .changes
-            .iter()
-            .any(|change| is_grounded_label(&change.label, &prompt_tokens))
-    }
-}
 
 impl BeliefStateUpdater for HeuristicBeliefStateUpdater {
     fn update(&self, context: DialogueStateContext<'_>) -> DialogueStateUpdate {
         let mut memory = context.memory.clone();
-        let mut force_no_write = false;
+        let dialogue_act = &context.interpretation.dialogue_act;
 
-        match context.dialogue_act {
+        match dialogue_act {
             DialogueAct::Constraint | DialogueAct::Correction => {
-                force_no_write = true;
                 memory.conversation_mode = ConversationMode::Brainstorming;
 
                 if let Some(summary) = interpret_correction(context.prompt) {
@@ -173,6 +142,7 @@ impl BeliefStateUpdater for HeuristicBeliefStateUpdater {
                         summary: summary.clone(),
                         related_refs: Vec::new(),
                     });
+                    memory.current_thread.current_focus = memory.current_focus.clone();
 
                     let summary_lower = summary.to_ascii_lowercase();
                     memory.active_assumptions.retain(|assumption| {
@@ -212,6 +182,7 @@ impl BeliefStateUpdater for HeuristicBeliefStateUpdater {
                     },
                 );
                 memory.open_questions.truncate(5);
+                memory.current_thread.open_questions = memory.open_questions.clone();
             }
             DialogueAct::Commit => {
                 memory.recent_corrections.clear();
@@ -222,6 +193,7 @@ impl BeliefStateUpdater for HeuristicBeliefStateUpdater {
                         summary: change.label.clone(),
                         related_refs: Vec::new(),
                     });
+                    memory.current_thread.current_focus = memory.current_focus.clone();
                 }
             }
             DialogueAct::Query => {
@@ -246,21 +218,28 @@ impl BeliefStateUpdater for HeuristicBeliefStateUpdater {
             }
         }
 
-        if let Some(topic) = infer_conversation_topic(context.prompt) {
+        if let InterpretationTarget::NewTopic(topic) = &context.interpretation.target {
+            memory.conversation_topic = topic.clone();
+            memory.current_thread.topic = memory.conversation_topic.clone();
+        } else if let Some(topic) = infer_conversation_topic(context.prompt) {
             memory.conversation_topic = topic;
+            memory.current_thread.topic = memory.conversation_topic.clone();
         } else if matches!(memory.conversation_mode, ConversationMode::Refining)
             && memory.current_focus.is_some()
         {
             // keep existing topic
-        } else if matches!(context.dialogue_act, DialogueAct::Brainstorm) {
+        } else if matches!(dialogue_act, DialogueAct::Brainstorm) {
             memory.conversation_topic = ConversationTopic::General;
+            memory.current_thread.topic = memory.conversation_topic.clone();
         }
 
+        memory.current_thread.turn_count = memory.turn_count;
+        memory.current_thread.status = NarrativeThreadStatus::Active;
+        sync_legacy_fields_from_thread(&mut memory);
         memory.updated_at = chrono::Utc::now();
 
         DialogueStateUpdate {
             working_memory: memory,
-            force_no_write,
         }
     }
 }
@@ -268,17 +247,17 @@ impl BeliefStateUpdater for HeuristicBeliefStateUpdater {
 impl AssistantCapabilityPlanner for HeuristicAssistantCapabilityPlanner {
     fn plan(&self, context: CapabilityPlanningContext<'_>) -> CapabilityPlan {
         let _ = context.prompt;
+        let dialogue_act = &context.interpretation.dialogue_act;
 
         let mut capabilities = vec![AssistantCapability::UnderstandTurn];
 
-        match context.dialogue_act {
+        match dialogue_act {
             DialogueAct::Query => {
                 capabilities.push(AssistantCapability::InspectProjectState);
                 capabilities.push(AssistantCapability::GuideNextStep);
                 CapabilityPlan {
                     intent: AssistantIntent::Query,
                     capabilities,
-                    write_policy: WritePolicy::NoWrite,
                 }
             }
             DialogueAct::Brainstorm => {
@@ -289,7 +268,6 @@ impl AssistantCapabilityPlanner for HeuristicAssistantCapabilityPlanner {
                 CapabilityPlan {
                     intent: AssistantIntent::Guide,
                     capabilities,
-                    write_policy: WritePolicy::NoWrite,
                 }
             }
             DialogueAct::Constraint | DialogueAct::Correction => {
@@ -301,7 +279,6 @@ impl AssistantCapabilityPlanner for HeuristicAssistantCapabilityPlanner {
                 CapabilityPlan {
                     intent: AssistantIntent::Clarify,
                     capabilities,
-                    write_policy: WritePolicy::NoWrite,
                 }
             }
             DialogueAct::Confirmation | DialogueAct::Commit if context.mutation_allowed => {
@@ -312,7 +289,6 @@ impl AssistantCapabilityPlanner for HeuristicAssistantCapabilityPlanner {
                 CapabilityPlan {
                     intent: AssistantIntent::MutateOntology,
                     capabilities,
-                    write_policy: WritePolicy::SafeCommit,
                 }
             }
             DialogueAct::Confirmation | DialogueAct::Commit => {
@@ -323,7 +299,6 @@ impl AssistantCapabilityPlanner for HeuristicAssistantCapabilityPlanner {
                 CapabilityPlan {
                     intent: AssistantIntent::Clarify,
                     capabilities,
-                    write_policy: WritePolicy::NoWrite,
                 }
             }
             DialogueAct::RewriteRequest => {
@@ -332,209 +307,9 @@ impl AssistantCapabilityPlanner for HeuristicAssistantCapabilityPlanner {
                 CapabilityPlan {
                     intent: AssistantIntent::MutateDocument,
                     capabilities,
-                    write_policy: WritePolicy::CandidateOnly,
                 }
             }
         }
-    }
-}
-
-impl AssistantFallbackResponder for HeuristicAssistantFallbackResponder {
-    fn respond(
-        &self,
-        prompt: &str,
-        preview: &NarrativeMessagePreview,
-        memory: &WorkingMemory,
-        plan: &CapabilityPlan,
-    ) -> AssistantResponse {
-        let title = match plan.intent {
-            AssistantIntent::Query => "Story Notes",
-            AssistantIntent::Clarify => "Need One Anchor",
-            AssistantIntent::MutateDocument => "Draft Suggestion",
-            AssistantIntent::ProposeSync => "Alignment Note",
-            AssistantIntent::ResolveLint => "Structure Check",
-            _ => "Story Direction",
-        }
-        .to_string();
-
-        let prefer_clarification_state = matches!(plan.intent, AssistantIntent::Clarify);
-
-        let body = if prefer_clarification_state {
-            if let Some(correction) = memory.recent_corrections.first() {
-                format!(
-                    "Understood. I will respect this correction:\n{}\nGive me one positive detail to replace it.",
-                    correction.summary
-                )
-            } else if let Some(constraint) = memory
-                .constraints
-                .iter()
-                .find(|constraint| constraint.operator != ConstraintOperator::Correct)
-            {
-                format!(
-                    "I'm respecting this active constraint: {:?} {:?} {}.\nGive me one concrete detail that fits it.",
-                    constraint.scope, constraint.operator, constraint.value
-                )
-            } else if is_low_information_followup(prompt, preview) {
-                if let Some(focus) = memory.current_focus.as_ref() {
-                    if let Some(constraint) = memory
-                        .constraints
-                        .iter()
-                        .find(|constraint| constraint.operator != ConstraintOperator::Correct)
-                    {
-                        format!(
-                            "We can continue from the current direction:\n{}\nI'm also respecting this constraint: {}.\nTell me one concrete aspect to develop next.",
-                            focus.summary, constraint.value
-                        )
-                    } else {
-                        format!(
-                            "We can continue from the current direction:\n{}\nTell me one concrete aspect to develop next.",
-                            focus.summary
-                        )
-                    }
-                } else {
-                    "We need one concrete anchor to continue. Give me a character, event, relationship, or setting detail.".to_string()
-                }
-            } else {
-                fallback_body(prompt, preview, memory, plan)
-            }
-        } else if is_low_information_followup(prompt, preview) {
-            if let Some(focus) = memory.current_focus.as_ref() {
-                if let Some(constraint) = memory
-                    .constraints
-                    .iter()
-                    .find(|constraint| constraint.operator != ConstraintOperator::Correct)
-                {
-                    format!(
-                        "We can continue from the current direction:\n{}\nI'm also respecting this constraint: {}.\nTell me one concrete aspect to develop next.",
-                        focus.summary, constraint.value
-                    )
-                } else {
-                    format!(
-                        "We can continue from the current direction:\n{}\nTell me one concrete aspect to develop next.",
-                        focus.summary
-                    )
-                }
-            } else {
-                "We need one concrete anchor to continue. Give me a character, event, relationship, or setting detail.".to_string()
-            }
-        } else if let Some(reply_body) =
-            preview.reply_body.as_ref().filter(|value| !value.trim().is_empty())
-        {
-            reply_body.clone()
-        } else if !preview.changes.is_empty() {
-            let focus = preview
-                .changes
-                .iter()
-                .take(2)
-                .map(|change| format!("{}: {}", change.label, change.detail))
-                .collect::<Vec<_>>()
-                .join("\n");
-
-            match plan.write_policy {
-                WritePolicy::CandidateOnly => format!(
-                    "I found a plausible story move, but I kept it as a proposal for now.\n{}",
-                    focus
-                ),
-                WritePolicy::NoWrite => format!(
-                    "I can work with this, but I need a bit more grounding before I treat it as story structure.\n{}",
-                    focus
-                ),
-                WritePolicy::SafeCommit => format!(
-                    "This looks grounded enough to shape the story model.\n{}",
-                    focus
-                ),
-            }
-        } else if let Some(question) = memory.open_questions.first() {
-            format!(
-                "I'm tracking this as the most useful next question:\n{}",
-                question.question
-            )
-        } else if let Some(focus) = memory.current_focus.as_ref() {
-            format!(
-                "We're currently focused on {}. Give me one concrete detail to build from.",
-                focus.summary
-            )
-        } else {
-            fallback_body(prompt, preview, memory, plan)
-        };
-
-        AssistantResponse::FinalReply {
-            intent: plan.intent.clone(),
-            title,
-            focus_summary: None,
-            body,
-        }
-    }
-}
-
-fn fallback_body(
-    prompt: &str,
-    preview: &NarrativeMessagePreview,
-    memory: &WorkingMemory,
-    plan: &CapabilityPlan,
-) -> String {
-    if is_low_information_followup(prompt, preview) {
-        if let Some(focus) = memory.current_focus.as_ref() {
-            if let Some(constraint) = memory
-                .constraints
-                .iter()
-                .find(|constraint| constraint.operator != ConstraintOperator::Correct)
-            {
-                format!(
-                    "We can continue from the current direction:\n{}\nI'm also respecting this constraint: {}.\nTell me one concrete aspect to develop next.",
-                    focus.summary, constraint.value
-                )
-            } else {
-                format!(
-                    "We can continue from the current direction:\n{}\nTell me one concrete aspect to develop next.",
-                    focus.summary
-                )
-            }
-        } else {
-            "We need one concrete anchor to continue. Give me a character, event, relationship, or setting detail.".to_string()
-        }
-    } else if let Some(reply_body) = preview.reply_body.as_ref().filter(|value| !value.trim().is_empty())
-    {
-        reply_body.clone()
-    } else if !preview.changes.is_empty() {
-        let focus = preview
-            .changes
-            .iter()
-            .take(2)
-            .map(|change| format!("{}: {}", change.label, change.detail))
-            .collect::<Vec<_>>()
-            .join("\n");
-
-        match plan.write_policy {
-            WritePolicy::CandidateOnly => format!(
-                "I found a plausible story move, but I kept it as a proposal for now.\n{}",
-                focus
-            ),
-            WritePolicy::NoWrite => format!(
-                "I can work with this, but I need a bit more grounding before I treat it as story structure.\n{}",
-                focus
-            ),
-            WritePolicy::SafeCommit => format!(
-                "This looks grounded enough to shape the story model.\n{}",
-                focus
-            ),
-        }
-    } else if let Some(question) = memory.open_questions.first() {
-        format!(
-            "I'm tracking this as the most useful next question:\n{}",
-            question.question
-        )
-    } else if let Some(focus) = memory.current_focus.as_ref() {
-        format!(
-            "We're currently focused on {}. Give me one concrete detail to build from.",
-            focus.summary
-        )
-    } else {
-        let trimmed = prompt.trim();
-        format!(
-            "I can help shape this. Give me one concrete character, event, relationship, or setting detail to build from.\nCurrent note: {}",
-            trimmed
-        )
     }
 }
 
@@ -565,18 +340,31 @@ impl ResponseStateFinalizer for HeuristicResponseStateFinalizer {
                             summary,
                             related_refs: meaningful_tokens(prompt),
                         });
+                        memory.current_thread.current_focus = memory.current_focus.clone();
                     }
                 }
             }
             AssistantIntent::MutateOntology => {
                 memory.conversation_mode = ConversationMode::Committing;
+                memory.current_thread.status = NarrativeThreadStatus::Committed;
             }
             _ => {}
         }
 
+        memory.current_thread.topic = memory.conversation_topic.clone();
+        memory.current_thread.turn_count = memory.turn_count;
+        memory.current_thread.open_questions = memory.open_questions.clone();
+        sync_legacy_fields_from_thread(&mut memory);
         memory.updated_at = chrono::Utc::now();
         memory
     }
+}
+
+fn sync_legacy_fields_from_thread(memory: &mut WorkingMemory) {
+    memory.conversation_topic = memory.current_thread.topic.clone();
+    memory.current_focus = memory.current_thread.current_focus.clone();
+    memory.open_questions = memory.current_thread.open_questions.clone();
+    memory.turn_count = memory.current_thread.turn_count.max(memory.turn_count);
 }
 
 #[cfg(test)]
@@ -621,10 +409,14 @@ mod tests {
             prompt: "apart from desert",
             preview: &empty_preview(),
             memory: &WorkingMemory::default(),
-            dialogue_act: &DialogueAct::Constraint,
+            interpretation: &TurnInterpretation {
+                dialogue_act: DialogueAct::Constraint,
+                target: InterpretationTarget::General,
+                route: TurnRoute::Continue,
+                confidence: 1.0,
+            },
         });
 
-        assert!(update.force_no_write);
         assert_eq!(update.working_memory.constraints.len(), 1);
         assert_eq!(update.working_memory.constraints[0].value, "desert");
         assert_eq!(update.working_memory.open_questions.len(), 1);
@@ -636,43 +428,19 @@ mod tests {
         let plan = planner.plan(CapabilityPlanningContext {
             prompt: "Shyam is Ram's brother",
             preview: &preview_with_change(),
-            dialogue_act: &DialogueAct::Commit,
+            interpretation: &TurnInterpretation {
+                dialogue_act: DialogueAct::Commit,
+                target: InterpretationTarget::CurrentCandidate,
+                route: TurnRoute::ConfirmCurrent,
+                confidence: 1.0,
+            },
             mutation_allowed: true,
         });
 
         assert_eq!(plan.intent, AssistantIntent::MutateOntology);
-        assert_eq!(plan.write_policy, WritePolicy::SafeCommit);
         assert!(plan
             .capabilities
             .contains(&AssistantCapability::CommitStructure));
-    }
-
-    #[test]
-    fn fallback_prioritizes_corrections_over_stale_preview_reply() {
-        let responder = HeuristicAssistantFallbackResponder;
-        let mut memory = WorkingMemory::default();
-        memory.recent_corrections.push(RecentCorrection {
-            id: "1".to_string(),
-            summary: "Correction from the writer: he does want to work".to_string(),
-            corrected_ref: None,
-        });
-        let plan = CapabilityPlan {
-            intent: AssistantIntent::Clarify,
-            capabilities: vec![AssistantCapability::ResolveAmbiguity],
-            write_policy: WritePolicy::NoWrite,
-        };
-
-        let AssistantResponse::FinalReply { body, .. } = responder.respond(
-            "No he does want to work",
-            &preview_with_change(),
-            &memory,
-            &plan,
-        ) else {
-            panic!("expected final reply");
-        };
-
-        assert!(body.contains("respect this correction"));
-        assert!(!body.contains("I can work with this relationship."));
     }
 
     #[test]
@@ -682,7 +450,6 @@ mod tests {
         let plan = CapabilityPlan {
             intent: AssistantIntent::Guide,
             capabilities: vec![AssistantCapability::GuideNextStep],
-            write_policy: WritePolicy::NoWrite,
         };
 
         let updated = finalizer.finalize(
@@ -715,29 +482,17 @@ mod tests {
             prompt: "suggest me a setting for my story",
             preview: &preview_with_change(),
             memory: &memory,
-            dialogue_act: &DialogueAct::Commit,
+            interpretation: &TurnInterpretation {
+                dialogue_act: DialogueAct::Commit,
+                target: InterpretationTarget::CurrentCandidate,
+                route: TurnRoute::ConfirmCurrent,
+                confidence: 1.0,
+            },
         });
 
         assert!(update.working_memory.recent_corrections.is_empty());
     }
 
-}
-
-fn is_grounded_label(label: &str, prompt_tokens: &[String]) -> bool {
-    let label_tokens = meaningful_tokens(label);
-    if label_tokens.is_empty() {
-        return false;
-    }
-
-    let generic_only = label_tokens.iter().all(|token| is_generic_story_token(token));
-    if generic_only {
-        return false;
-    }
-
-    label_tokens
-        .iter()
-        .filter(|token| !is_generic_story_token(token))
-        .any(|token| prompt_tokens.iter().any(|prompt| prompt == token))
 }
 
 fn meaningful_tokens(value: &str) -> Vec<String> {
@@ -781,23 +536,6 @@ fn is_stopword(token: &str) -> bool {
     )
 }
 
-fn is_generic_story_token(token: &str) -> bool {
-    matches!(
-        token,
-        "story"
-            | "character"
-            | "event"
-            | "person"
-            | "creator"
-            | "documentary"
-            | "scene"
-            | "problem"
-            | "thing"
-            | "someone"
-            | "somebody"
-    )
-}
-
 fn is_low_information_followup(prompt: &str, preview: &NarrativeMessagePreview) -> bool {
     if !preview.changes.is_empty() {
         return false;
@@ -810,17 +548,6 @@ fn is_low_information_followup(prompt: &str, preview: &NarrativeMessagePreview) 
 
     let tokens = meaningful_tokens(trimmed);
     tokens.len() <= 2
-}
-
-fn is_confirmation(lower_prompt: &str) -> bool {
-    matches!(lower_prompt, "yes" | "yeah" | "yep" | "correct" | "exactly" | "right")
-}
-
-fn requests_rewrite(lower_prompt: &str) -> bool {
-    lower_prompt.contains("rewrite")
-        || lower_prompt.contains("draft")
-        || lower_prompt.contains("write the scene")
-        || lower_prompt.contains("write a scene")
 }
 
 fn infer_conversation_topic(prompt: &str) -> Option<ConversationTopic> {

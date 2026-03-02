@@ -1,25 +1,21 @@
 pub mod assistant_turn;
+pub mod drama_manager;
 pub mod narrative_runtime;
 pub mod narrative_service;
 pub mod screenplay_service;
-pub mod sync_coordinator;
 
 pub use assistant_turn::{
-    AssistantCapabilityPlanner, AssistantFallbackResponder, AssistantIntentContext,
-    BeliefStateUpdater, CapabilityPlan, CapabilityPlanningContext, DialogueAct,
-    DialogueActClassifier, DialogueActContext, DialogueStateContext, DialogueStateUpdate,
-    HeuristicAssistantCapabilityPlanner, HeuristicAssistantFallbackResponder,
-    HeuristicBeliefStateUpdater, HeuristicMutationGate, HeuristicResponseStateFinalizer,
-    MutationGate, NarrativeConversationSupport, NeutralDialogueActClassifier,
-    ResponseStateFinalizer,
+    AssistantCapabilityPlanner, BeliefStateUpdater, CapabilityPlan,
+    CapabilityPlanningContext, DialogueAct, DialogueActClassifier, DialogueActContext,
+    DialogueStateContext, DialogueStateUpdate, HeuristicAssistantCapabilityPlanner,
+    HeuristicBeliefStateUpdater, HeuristicResponseStateFinalizer, InterpretationTarget,
+    NarrativeConversationSupport, ResponseStateFinalizer, TurnInterpretation, TurnRoute,
+};
+pub use drama_manager::{
+    derive_thread_status, DeterministicNarrativeEngine, NarrativeEngine,
 };
 pub use narrative_runtime::{
     DefaultNarrativeRuntime, NarrativeRuntime, NarrativeRuntimeDeps, NarrativeTurnOutcome,
 };
 pub use narrative_service::NarrativeService;
 pub use screenplay_service::ScreenplayService;
-pub use sync_coordinator::{
-    AppliedEffect, CandidateResolver, DocumentExtractor, EntityMatcher, LintContext, LintEngine,
-    ResolutionContext, ResolutionDecision, SyncCoordinator, SyncRunOutcome, SyncSource,
-    SyncSummary, SyncResolver, TimelineReasoner,
-};

@@ -2,7 +2,8 @@ use std::sync::Mutex;
 
 use crate::domain::{
     AppError, NarrativeCharacter, NarrativeEvent, NarrativeSnapshot, OntologyEntity,
-    OntologyEntityKind, OntologyRelationship, OntologyRelationshipKind,
+    OntologyEntityKind,
+    OntologyRelationship, OntologyRelationshipKind,
 };
 use crate::ports::NarrativeRepository;
 use uuid::Uuid;
@@ -121,39 +122,6 @@ impl NarrativeRepository for MemoryNarrativeRepository {
         snapshot.metrics.event_count = snapshot.events.len();
 
         Ok(event)
-    }
-
-    fn save_entity(&self, entity: OntologyEntity) -> Result<OntologyEntity, AppError> {
-        let mut snapshot = self
-            .snapshot
-            .lock()
-            .map_err(|_| AppError::StatePoisoned("narrative store lock poisoned"))?;
-
-        snapshot
-            .ontology_graph
-            .entities
-            .retain(|existing| existing.id != entity.id);
-        snapshot.ontology_graph.entities.push(entity.clone());
-
-        Ok(entity)
-    }
-
-    fn save_relationship(
-        &self,
-        relationship: OntologyRelationship,
-    ) -> Result<OntologyRelationship, AppError> {
-        let mut snapshot = self
-            .snapshot
-            .lock()
-            .map_err(|_| AppError::StatePoisoned("narrative store lock poisoned"))?;
-
-        snapshot
-            .ontology_graph
-            .relationships
-            .retain(|existing| existing.id != relationship.id);
-        snapshot.ontology_graph.relationships.push(relationship.clone());
-
-        Ok(relationship)
     }
 
     fn load_snapshot(&self) -> Result<NarrativeSnapshot, AppError> {

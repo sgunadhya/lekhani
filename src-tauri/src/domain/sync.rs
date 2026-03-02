@@ -89,27 +89,6 @@ pub struct SyncCandidate {
     pub resolved_at: Option<DateTime<Utc>>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub enum ConflictKind {
-    AmbiguousMatch,
-    DuplicateEntity,
-    VersionMismatch,
-    ContradictoryTimeline,
-    UnsupportedPatch,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SyncConflict {
-    pub id: Uuid,
-    pub candidate_id: Uuid,
-    pub conflict_kind: ConflictKind,
-    pub summary: String,
-    pub details_json: Option<String>,
-    pub status: CandidateStatus,
-    pub created_at: DateTime<Utc>,
-    pub resolved_at: Option<DateTime<Utc>>,
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProvenanceRecord {
     pub id: Uuid,
@@ -121,59 +100,4 @@ pub struct ProvenanceRecord {
     pub confidence: Option<f32>,
     pub notes: Option<String>,
     pub created_at: DateTime<Utc>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub enum LinkStatus {
-    Linked,
-    Suggested,
-    Conflicted,
-    Orphaned,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DocumentOntologyLink {
-    pub id: Uuid,
-    pub document_ref: String,
-    pub ontology_ref: String,
-    pub link_kind: String,
-    pub confidence: Option<f32>,
-    pub status: LinkStatus,
-    pub provenance_id: Option<Uuid>,
-    pub created_at: DateTime<Utc>,
-    pub updated_at: DateTime<Utc>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub enum LintScope {
-    Document,
-    Ontology,
-    Alignment,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub enum LintSeverity {
-    Info,
-    Warning,
-    Error,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub enum LintStatus {
-    Open,
-    Resolved,
-    Dismissed,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct LintFinding {
-    pub id: Uuid,
-    pub scope: LintScope,
-    pub severity: LintSeverity,
-    pub kind: String,
-    pub message: String,
-    pub evidence_json: Option<String>,
-    pub status: LintStatus,
-    pub created_at: DateTime<Utc>,
-    pub resolved_at: Option<DateTime<Utc>>,
 }

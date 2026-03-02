@@ -1,6 +1,4 @@
-use crate::domain::{
-    ConversationTopic, NarrativeMessagePreview, OntologyEntity, WorkingMemory,
-};
+use crate::domain::{ConversationTopic, OntologyEntity, WorkingMemory};
 
 pub trait MutationGateway: Send + Sync {
     fn save_working_memory(&self, memory: WorkingMemory) -> Result<(), String>;
@@ -15,5 +13,4 @@ pub trait MutationGateway: Send + Sync {
         topic: ConversationTopic,
         focus_summary: &str,
     ) -> Result<bool, String>;
-    fn propose_preview(&self, preview: &NarrativeMessagePreview) -> Result<bool, String>;
 }

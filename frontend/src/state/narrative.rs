@@ -1,7 +1,7 @@
 use crate::api::dto::{
-    AssistantIntentDto, AssistantTurnDto, LlmStatusDto, NarrativeCommitTargetDto,
-    NarrativeNudgeDto, NarrativeSnapshotDto, NarrativeSuggestedActionViewDto,
-    NarrativeSuggestionActionDto, PreviewNarrativeInputDto, SyncDebugDto, WorkingMemoryDto,
+    AssistantIntentDto, AssistantTurnDto, BeatIdDto, InterpretationTargetDto, LlmStatusDto,
+    NarrativeModeDto, NarrativeSnapshotDto, NarrativeSuggestedActionViewDto,
+    NarrativeSuggestionActionDto, SyncDebugDto, ThreadStatusDto, TurnRouteDto, WorkingMemoryDto,
 };
 use crate::api::tauri;
 use leptos::*;
@@ -25,6 +25,13 @@ pub struct NarrativeChatContext {
     pub messages: RwSignal<Vec<ChatMessage>>,
     pub working_memory: RwSignal<Option<WorkingMemoryDto>>,
     pub last_intent: RwSignal<Option<AssistantIntentDto>>,
+    pub last_mode: RwSignal<Option<NarrativeModeDto>>,
+    pub last_thread_status: RwSignal<Option<ThreadStatusDto>>,
+    pub last_interpretation_target: RwSignal<Option<InterpretationTargetDto>>,
+    pub last_interpretation_route: RwSignal<Option<TurnRouteDto>>,
+    pub last_interpretation_confidence: RwSignal<Option<f32>>,
+    pub last_beat: RwSignal<Option<BeatIdDto>>,
+    pub last_evaluation_nudge: RwSignal<Option<String>>,
     pub suggested_actions: RwSignal<Vec<NarrativeSuggestedActionViewDto>>,
 }
 
@@ -39,18 +46,16 @@ impl NarrativeChatContext {
             }]),
             working_memory: create_rw_signal(None),
             last_intent: create_rw_signal(None),
+            last_mode: create_rw_signal(None),
+            last_thread_status: create_rw_signal(None),
+            last_interpretation_target: create_rw_signal(None),
+            last_interpretation_route: create_rw_signal(None),
+            last_interpretation_confidence: create_rw_signal(None),
+            last_beat: create_rw_signal(None),
+            last_evaluation_nudge: create_rw_signal(None),
             suggested_actions: create_rw_signal(Vec::new()),
         }
     }
-}
-
-pub fn create_nudge_resource(
-    refresh: ReadSignal<u64>,
-) -> Resource<u64, Result<NarrativeNudgeDto, String>> {
-    create_local_resource(move || refresh.get(), |nonce| async move {
-        _ = nonce;
-        tauri::get_nudge().await
-    })
 }
 
 pub fn create_llm_status_resource() -> Resource<(), Result<LlmStatusDto, String>> {
@@ -72,27 +77,6 @@ pub fn create_working_memory_resource(
     create_local_resource(move || refresh.get(), |nonce| async move {
         _ = nonce;
         tauri::get_working_memory().await
-    })
-}
-
-pub fn create_preview_resource(
-    prompt: ReadSignal<String>,
-) -> Resource<String, Result<PreviewNarrativeInputDto, String>> {
-    create_local_resource(move || prompt.get(), |prompt| async move {
-        if prompt.trim().is_empty() {
-            Ok(PreviewNarrativeInputDto {
-                prompt,
-                suggested_target: NarrativeCommitTargetDto::Character,
-                character: None,
-                event: None,
-                relationships: Vec::new(),
-                changes: Vec::new(),
-                reply_title: None,
-                reply_body: None,
-            })
-        } else {
-            tauri::preview_narrative_input(prompt).await
-        }
     })
 }
 

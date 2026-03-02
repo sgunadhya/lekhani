@@ -1,7 +1,7 @@
 use crate::adapters::mcp::{apply_suggestion_action, get_debug_state, preview_turn, submit_turn, SyncDebugState};
 use crate::adapters::tauri::dto::{
     AssistantTurnDto, CommitNarrativeInputRequest, DocumentFileDto, LlmStatusDto, NarrativeCharacterDto,
-    NarrativeEventDto, NarrativeNudgeDto, NarrativeSnapshotDto, NarrativeSuggestionActionRequest,
+    NarrativeEventDto, NarrativeSnapshotDto, NarrativeSuggestionActionRequest,
     NarrativeTurnDto, ParseDescriptionRequest, PreviewNarrativeInputDto, SaveDocumentRequest,
     SyncDebugDto, SaveScreenplayRequest, ScreenplayDto, WorkingMemoryDto,
 };
@@ -278,8 +278,15 @@ pub async fn submit_assistant_turn(
             intent: turn.intent,
             capabilities: turn.capabilities,
             write_policy: turn.write_policy,
+            interpretation_target: turn.interpretation_target,
+            interpretation_route: turn.interpretation_route,
+            interpretation_confidence: turn.interpretation_confidence,
             reply_title: turn.reply_title,
             reply_body: turn.reply_body,
+            narrative_mode: turn.narrative_mode,
+            thread_status: turn.thread_status,
+            active_beat: turn.active_beat,
+            evaluation_nudge: turn.evaluation_nudge,
             committed: turn.committed,
             working_memory: turn.working_memory,
             suggested_actions: turn.suggested_actions,
@@ -300,8 +307,15 @@ pub async fn apply_narrative_suggestion(
             intent: turn.intent,
             capabilities: turn.capabilities,
             write_policy: turn.write_policy,
+            interpretation_target: turn.interpretation_target,
+            interpretation_route: turn.interpretation_route,
+            interpretation_confidence: turn.interpretation_confidence,
             reply_title: turn.reply_title,
             reply_body: turn.reply_body,
+            narrative_mode: turn.narrative_mode,
+            thread_status: turn.thread_status,
+            active_beat: turn.active_beat,
+            evaluation_nudge: turn.evaluation_nudge,
             committed: turn.committed,
             working_memory: turn.working_memory,
             suggested_actions: turn.suggested_actions,
@@ -336,12 +350,6 @@ pub fn parse_event(
         .parse_event(&request.description, &snapshot)?;
     state.store_event(event.clone())?;
     Ok(event)
-}
-
-#[tauri::command]
-pub fn get_nudge(state: State<'_, AppState>) -> Result<NarrativeNudgeDto, String> {
-    let snapshot = state.get_snapshot()?;
-    state.narrative_service.get_nudge(&snapshot)
 }
 
 #[tauri::command]

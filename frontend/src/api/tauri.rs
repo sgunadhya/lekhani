@@ -1,9 +1,7 @@
 use crate::api::dto::{
     AssistantTurnDto, CommitNarrativeInputRequest, DocumentFileDto, LlmStatusDto,
-    NarrativeSuggestionActionDto,
-    NarrativeNudgeDto, NarrativeSnapshotDto, ParseDescriptionRequest, PreviewNarrativeInputDto,
-    SaveDocumentRequest, SyncDebugDto, WorkingMemoryDto,
-    SaveScreenplayRequest, ScreenplayDto,
+    NarrativeSnapshotDto, NarrativeSuggestionActionDto, SaveDocumentRequest,
+    SaveScreenplayRequest, ScreenplayDto, SyncDebugDto, WorkingMemoryDto,
 };
 use gloo_utils::format::JsValueSerdeExt;
 use js_sys::{Function, Object, Promise, Reflect};
@@ -139,17 +137,6 @@ pub async fn save_project_document_as(
         .map_err(|err| format!("Deserialize error: {err}"))
 }
 
-pub async fn preview_narrative_input(
-    description: String,
-) -> Result<PreviewNarrativeInputDto, String> {
-    let args = ParseDescriptionRequest { description };
-    let js_args = named_request_args(&args)?;
-    let js_value = invoke_tauri("preview_narrative_input", js_args).await?;
-    js_value
-        .into_serde()
-        .map_err(|err| format!("Deserialize error: {err}"))
-}
-
 pub async fn submit_assistant_turn(
     prompt: String,
 ) -> Result<AssistantTurnDto, String> {
@@ -168,13 +155,6 @@ pub async fn apply_narrative_suggestion(
     let js_args = JsValue::from_serde(&payload)
         .map_err(|err| format!("JsValue conversion error: {err}"))?;
     let js_value = invoke_tauri("apply_narrative_suggestion", js_args).await?;
-    js_value
-        .into_serde()
-        .map_err(|err| format!("Deserialize error: {err}"))
-}
-
-pub async fn get_nudge() -> Result<NarrativeNudgeDto, String> {
-    let js_value = invoke_tauri("get_nudge", Object::new().into()).await?;
     js_value
         .into_serde()
         .map_err(|err| format!("Deserialize error: {err}"))

@@ -5,17 +5,14 @@ use chrono::{DateTime, Utc};
 use rusqlite::{params, Connection, OptionalExtension};
 
 use crate::domain::{
-    AppError, AssistantIntent, CandidateStatus, DocumentOntologyLink, FocusItem, LintFinding,
-    LintScope, LintSeverity, LintStatus, NarrativeCharacter, NarrativeEvent, NarrativeMetrics,
-    NarrativeSnapshot,
-    OntologyEntity, OntologyEntityKind, OntologyGraph, OntologyRelationship,
-    OntologyRelationshipKind, ProvenanceRecord, Screenplay, ScreenplayChange, SyncActionKind,
-    SyncCandidate, SyncConflict, SyncRun, SyncRunStatus, SyncSourceKind, SyncTargetKind,
-    SyncTargetLayer, WorkingMemory,
+    AppError, CandidateStatus, FocusItem, NarrativeCharacter, NarrativeEvent,
+    NarrativeMetrics, NarrativeSnapshot, OntologyEntity, OntologyEntityKind, OntologyGraph,
+    OntologyRelationship, OntologyRelationshipKind, ProvenanceRecord, Screenplay,
+    ScreenplayChange, SyncActionKind, SyncCandidate, SyncRun, SyncRunStatus, SyncSourceKind,
+    SyncTargetKind, SyncTargetLayer, WorkingMemory,
 };
 use crate::ports::{
-    CandidateRepository, ConflictRepository, LinkRepository, LintRepository,
-    NarrativeRepository, ProvenanceRepository, ScreenplayRepository, SyncRunRepository,
+    CandidateRepository, NarrativeRepository, ScreenplayRepository, SyncRunRepository,
     WorkingMemoryRepository,
 };
 use uuid::Uuid;
@@ -163,6 +160,34 @@ impl SqliteScreenplayRepository {
             connection.execute_batch(
                 "ALTER TABLE assistant_working_memory
                  ADD COLUMN conversation_topic TEXT NOT NULL DEFAULT 'General';",
+            )?;
+        }
+
+        if !columns.iter().any(|column| column == "turn_count") {
+            connection.execute_batch(
+                "ALTER TABLE assistant_working_memory
+                 ADD COLUMN turn_count INTEGER NOT NULL DEFAULT 0;",
+            )?;
+        }
+
+        if !columns.iter().any(|column| column == "current_thread_json") {
+            connection.execute_batch(
+                "ALTER TABLE assistant_working_memory
+                 ADD COLUMN current_thread_json TEXT NOT NULL DEFAULT '{}';",
+            )?;
+        }
+
+        if !columns.iter().any(|column| column == "sidequests_json") {
+            connection.execute_batch(
+                "ALTER TABLE assistant_working_memory
+                 ADD COLUMN sidequests_json TEXT NOT NULL DEFAULT '[]';",
+            )?;
+        }
+
+        if !columns.iter().any(|column| column == "return_thread_json") {
+            connection.execute_batch(
+                "ALTER TABLE assistant_working_memory
+                 ADD COLUMN return_thread_json TEXT NOT NULL DEFAULT 'null';",
             )?;
         }
 
@@ -817,40 +842,6 @@ impl NarrativeRepository for SqliteScreenplayRepository {
         Ok(event)
     }
 
-    fn save_entity(&self, entity: OntologyEntity) -> Result<OntologyEntity, AppError> {
-        let connection = self.connection()?;
-        Self::upsert_ontology_entity(&connection, &entity)?;
-        Ok(entity)
-    }
-
-    fn save_relationship(
-        &self,
-        relationship: OntologyRelationship,
-    ) -> Result<OntologyRelationship, AppError> {
-        let connection = self.connection()?;
-        connection
-            .execute(
-                "INSERT INTO ontology_relationships
-                    (id, source_entity_id, target_entity_id, relationship_kind, summary)
-                 VALUES (?1, ?2, ?3, ?4, ?5)
-                 ON CONFLICT(id) DO UPDATE SET
-                    source_entity_id = excluded.source_entity_id,
-                    target_entity_id = excluded.target_entity_id,
-                    relationship_kind = excluded.relationship_kind,
-                    summary = excluded.summary",
-                params![
-                    relationship.id.to_string(),
-                    relationship.source_id.to_string(),
-                    relationship.target_id.to_string(),
-                    ontology_relationship_kind_to_str(&relationship.kind),
-                    relationship.summary,
-                ],
-            )
-            .map_err(|_| AppError::StatePoisoned("failed to save ontology relationship"))?;
-
-        Ok(relationship)
-    }
-
     fn load_snapshot(&self) -> Result<NarrativeSnapshot, AppError> {
         let connection = self.connection()?;
         let characters = Self::load_characters(&connection)?;
@@ -927,65 +918,6 @@ impl SyncRunRepository for SqliteScreenplayRepository {
 
         Ok(run)
     }
-
-    fn update_run(&self, run: SyncRun) -> Result<SyncRun, AppError> {
-        let connection = self.connection()?;
-        connection
-            .execute(
-                "UPDATE sync_runs
-                 SET source_kind = ?2,
-                     source_ref = ?3,
-                     document_version = ?4,
-                     ontology_version = ?5,
-                     status = ?6,
-                     created_at = ?7,
-                     completed_at = ?8
-                 WHERE id = ?1",
-                params![
-                    run.id.to_string(),
-                    sync_source_kind_to_str(&run.source_kind),
-                    run.source_ref,
-                    run.document_version,
-                    run.ontology_version,
-                    sync_run_status_to_str(&run.status),
-                    run.created_at.to_rfc3339(),
-                    run.completed_at.map(|value| value.to_rfc3339()),
-                ],
-            )
-            .map_err(|_| AppError::StatePoisoned("failed to update sync run"))?;
-
-        Ok(run)
-    }
-
-    fn get_run(&self, run_id: &str) -> Result<Option<SyncRun>, AppError> {
-        let connection = self.connection()?;
-        connection
-            .query_row(
-                "SELECT id, source_kind, source_ref, document_version, ontology_version, status, created_at, completed_at
-                 FROM sync_runs
-                 WHERE id = ?1",
-                [run_id],
-                |row| {
-                    let id: String = row.get(0)?;
-                    let source_kind: String = row.get(1)?;
-                    let created_at: String = row.get(6)?;
-                    let completed_at: Option<String> = row.get(7)?;
-
-                    Ok(SyncRun {
-                        id: parse_uuid_or_nil(&id),
-                        source_kind: sync_source_kind_from_str(&source_kind),
-                        source_ref: row.get(2)?,
-                        document_version: row.get(3)?,
-                        ontology_version: row.get(4)?,
-                        status: sync_run_status_from_str(&row.get::<_, String>(5)?),
-                        created_at: parse_datetime_or_now(&created_at),
-                        completed_at: completed_at.as_deref().map(parse_datetime_or_now),
-                    })
-                },
-            )
-            .optional()
-            .map_err(|_| AppError::StatePoisoned("failed to query sync run"))
-    }
 }
 
 impl CandidateRepository for SqliteScreenplayRepository {
@@ -1015,49 +947,6 @@ impl CandidateRepository for SqliteScreenplayRepository {
                 ],
             )
             .map_err(|_| AppError::StatePoisoned("failed to create sync candidate"))?;
-
-        Ok(candidate)
-    }
-
-    fn update_candidate(&self, candidate: SyncCandidate) -> Result<SyncCandidate, AppError> {
-        let connection = self.connection()?;
-        connection
-            .execute(
-                "UPDATE sync_candidates
-                 SET sync_run_id = ?2,
-                     source_kind = ?3,
-                     source_ref = ?4,
-                     target_layer = ?5,
-                     target_kind = ?6,
-                     action_kind = ?7,
-                     status = ?8,
-                     confidence = ?9,
-                     title = ?10,
-                     summary = ?11,
-                     payload_json = ?12,
-                     evidence_json = ?13,
-                     created_at = ?14,
-                     resolved_at = ?15
-                 WHERE id = ?1",
-                params![
-                    candidate.id.to_string(),
-                    candidate.sync_run_id.to_string(),
-                    sync_source_kind_to_str(&candidate.source_kind),
-                    candidate.source_ref,
-                    sync_target_layer_to_str(&candidate.target_layer),
-                    sync_target_kind_to_str(&candidate.target_kind),
-                    sync_action_kind_to_str(&candidate.action_kind),
-                    candidate_status_to_str(&candidate.status),
-                    candidate.confidence,
-                    candidate.title,
-                    candidate.summary,
-                    candidate.payload_json,
-                    candidate.evidence_json,
-                    candidate.created_at.to_rfc3339(),
-                    candidate.resolved_at.map(|value| value.to_rfc3339()),
-                ],
-            )
-            .map_err(|_| AppError::StatePoisoned("failed to update sync candidate"))?;
 
         Ok(candidate)
     }
@@ -1110,282 +999,6 @@ impl CandidateRepository for SqliteScreenplayRepository {
     }
 }
 
-impl ConflictRepository for SqliteScreenplayRepository {
-    fn create_conflict(&self, conflict: SyncConflict) -> Result<SyncConflict, AppError> {
-        let connection = self.connection()?;
-        connection
-            .execute(
-                "INSERT INTO sync_conflicts
-                    (id, candidate_id, conflict_kind, summary, details_json, status, created_at, resolved_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-                params![
-                    conflict.id.to_string(),
-                    conflict.candidate_id.to_string(),
-                    conflict_kind_to_str(&conflict.conflict_kind),
-                    conflict.summary,
-                    conflict.details_json,
-                    candidate_status_to_str(&conflict.status),
-                    conflict.created_at.to_rfc3339(),
-                    conflict.resolved_at.map(|value| value.to_rfc3339()),
-                ],
-            )
-            .map_err(|_| AppError::StatePoisoned("failed to create sync conflict"))?;
-
-        Ok(conflict)
-    }
-
-    fn list_open_conflicts(&self) -> Result<Vec<SyncConflict>, AppError> {
-        let connection = self.connection()?;
-        let mut statement = connection
-            .prepare(
-                "SELECT id, candidate_id, conflict_kind, summary, details_json, status, created_at, resolved_at
-                 FROM sync_conflicts
-                 WHERE status = 'conflicted'
-                 ORDER BY created_at ASC",
-            )
-            .map_err(|_| AppError::StatePoisoned("failed to prepare sync conflict query"))?;
-
-        let rows = statement
-            .query_map([], |row| {
-                let id: String = row.get(0)?;
-                let candidate_id: String = row.get(1)?;
-                let conflict_kind: String = row.get(2)?;
-                let status: String = row.get(5)?;
-                let created_at: String = row.get(6)?;
-                let resolved_at: Option<String> = row.get(7)?;
-
-                Ok(SyncConflict {
-                    id: parse_uuid_or_nil(&id),
-                    candidate_id: parse_uuid_or_nil(&candidate_id),
-                    conflict_kind: conflict_kind_from_str(&conflict_kind),
-                    summary: row.get(3)?,
-                    details_json: row.get(4)?,
-                    status: candidate_status_from_str(&status),
-                    created_at: parse_datetime_or_now(&created_at),
-                    resolved_at: resolved_at.as_deref().map(parse_datetime_or_now),
-                })
-            })
-            .map_err(|_| AppError::StatePoisoned("failed to query sync conflicts"))?;
-
-        rows.collect::<Result<Vec<_>, _>>()
-            .map_err(|_| AppError::StatePoisoned("failed to read sync conflict rows"))
-    }
-}
-
-impl ProvenanceRepository for SqliteScreenplayRepository {
-    fn create_record(&self, record: ProvenanceRecord) -> Result<ProvenanceRecord, AppError> {
-        let connection = self.connection()?;
-        connection
-            .execute(
-                "INSERT INTO provenance_records
-                    (id, sync_run_id, source_kind, source_ref, derived_kind, derived_ref, confidence, notes, created_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
-                params![
-                    record.id.to_string(),
-                    record.sync_run_id.to_string(),
-                    sync_source_kind_to_str(&record.source_kind),
-                    record.source_ref,
-                    record.derived_kind,
-                    record.derived_ref,
-                    record.confidence,
-                    record.notes,
-                    record.created_at.to_rfc3339(),
-                ],
-            )
-            .map_err(|_| AppError::StatePoisoned("failed to create provenance record"))?;
-
-        Ok(record)
-    }
-
-    fn list_for_run(&self, run_id: &str) -> Result<Vec<ProvenanceRecord>, AppError> {
-        let connection = self.connection()?;
-        let mut statement = connection
-            .prepare(
-                "SELECT id, sync_run_id, source_kind, source_ref, derived_kind, derived_ref, confidence, notes, created_at
-                 FROM provenance_records
-                 WHERE sync_run_id = ?1
-                 ORDER BY created_at ASC",
-            )
-            .map_err(|_| AppError::StatePoisoned("failed to prepare provenance query"))?;
-
-        let rows = statement
-            .query_map([run_id], |row| {
-                let id: String = row.get(0)?;
-                let sync_run_id: String = row.get(1)?;
-                let source_kind: String = row.get(2)?;
-                let created_at: String = row.get(8)?;
-
-                Ok(ProvenanceRecord {
-                    id: parse_uuid_or_nil(&id),
-                    sync_run_id: parse_uuid_or_nil(&sync_run_id),
-                    source_kind: sync_source_kind_from_str(&source_kind),
-                    source_ref: row.get(3)?,
-                    derived_kind: row.get(4)?,
-                    derived_ref: row.get(5)?,
-                    confidence: row.get(6)?,
-                    notes: row.get(7)?,
-                    created_at: parse_datetime_or_now(&created_at),
-                })
-            })
-            .map_err(|_| AppError::StatePoisoned("failed to query provenance records"))?;
-
-        rows.collect::<Result<Vec<_>, _>>()
-            .map_err(|_| AppError::StatePoisoned("failed to read provenance rows"))
-    }
-}
-
-impl LinkRepository for SqliteScreenplayRepository {
-    fn upsert_link(&self, link: DocumentOntologyLink) -> Result<DocumentOntologyLink, AppError> {
-        let connection = self.connection()?;
-        connection
-            .execute(
-                "INSERT INTO document_ontology_links
-                    (id, document_ref, ontology_ref, link_kind, confidence, status, provenance_id, created_at, updated_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
-                 ON CONFLICT(id) DO UPDATE SET
-                    document_ref = excluded.document_ref,
-                    ontology_ref = excluded.ontology_ref,
-                    link_kind = excluded.link_kind,
-                    confidence = excluded.confidence,
-                    status = excluded.status,
-                    provenance_id = excluded.provenance_id,
-                    created_at = excluded.created_at,
-                    updated_at = excluded.updated_at",
-                params![
-                    link.id.to_string(),
-                    link.document_ref,
-                    link.ontology_ref,
-                    link.link_kind,
-                    link.confidence,
-                    link_status_to_str(&link.status),
-                    link.provenance_id.map(|value| value.to_string()),
-                    link.created_at.to_rfc3339(),
-                    link.updated_at.to_rfc3339(),
-                ],
-            )
-            .map_err(|_| AppError::StatePoisoned("failed to upsert document ontology link"))?;
-
-        Ok(link)
-    }
-
-    fn find_for_document_ref(
-        &self,
-        document_ref: &str,
-    ) -> Result<Vec<DocumentOntologyLink>, AppError> {
-        let connection = self.connection()?;
-        let mut statement = connection
-            .prepare(
-                "SELECT id, document_ref, ontology_ref, link_kind, confidence, status, provenance_id, created_at, updated_at
-                 FROM document_ontology_links
-                 WHERE document_ref = ?1
-                 ORDER BY updated_at DESC",
-            )
-            .map_err(|_| AppError::StatePoisoned("failed to prepare document link query"))?;
-
-        let rows = statement
-            .query_map([document_ref], map_document_ontology_link_row)
-            .map_err(|_| AppError::StatePoisoned("failed to query document links"))?;
-
-        rows.collect::<Result<Vec<_>, _>>()
-            .map_err(|_| AppError::StatePoisoned("failed to read document link rows"))
-    }
-
-    fn find_for_ontology_ref(
-        &self,
-        ontology_ref: &str,
-    ) -> Result<Vec<DocumentOntologyLink>, AppError> {
-        let connection = self.connection()?;
-        let mut statement = connection
-            .prepare(
-                "SELECT id, document_ref, ontology_ref, link_kind, confidence, status, provenance_id, created_at, updated_at
-                 FROM document_ontology_links
-                 WHERE ontology_ref = ?1
-                 ORDER BY updated_at DESC",
-            )
-            .map_err(|_| AppError::StatePoisoned("failed to prepare ontology link query"))?;
-
-        let rows = statement
-            .query_map([ontology_ref], map_document_ontology_link_row)
-            .map_err(|_| AppError::StatePoisoned("failed to query ontology links"))?;
-
-        rows.collect::<Result<Vec<_>, _>>()
-            .map_err(|_| AppError::StatePoisoned("failed to read ontology link rows"))
-    }
-}
-
-impl LintRepository for SqliteScreenplayRepository {
-    fn upsert_finding(&self, finding: LintFinding) -> Result<LintFinding, AppError> {
-        let connection = self.connection()?;
-        connection
-            .execute(
-                "INSERT INTO lint_findings
-                    (id, scope, severity, kind, message, evidence_json, status, created_at, resolved_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
-                 ON CONFLICT(id) DO UPDATE SET
-                    scope = excluded.scope,
-                    severity = excluded.severity,
-                    kind = excluded.kind,
-                    message = excluded.message,
-                    evidence_json = excluded.evidence_json,
-                    status = excluded.status,
-                    created_at = excluded.created_at,
-                    resolved_at = excluded.resolved_at",
-                params![
-                    finding.id.to_string(),
-                    lint_scope_to_str(&finding.scope),
-                    lint_severity_to_str(&finding.severity),
-                    finding.kind,
-                    finding.message,
-                    finding.evidence_json,
-                    lint_status_to_str(&finding.status),
-                    finding.created_at.to_rfc3339(),
-                    finding.resolved_at.map(|value| value.to_rfc3339()),
-                ],
-            )
-            .map_err(|_| AppError::StatePoisoned("failed to upsert lint finding"))?;
-
-        Ok(finding)
-    }
-
-    fn list_open_findings(&self) -> Result<Vec<LintFinding>, AppError> {
-        let connection = self.connection()?;
-        let mut statement = connection
-            .prepare(
-                "SELECT id, scope, severity, kind, message, evidence_json, status, created_at, resolved_at
-                 FROM lint_findings
-                 WHERE status = 'open'
-                 ORDER BY created_at DESC",
-            )
-            .map_err(|_| AppError::StatePoisoned("failed to prepare lint finding query"))?;
-
-        let rows = statement
-            .query_map([], |row| {
-                let id: String = row.get(0)?;
-                let scope: String = row.get(1)?;
-                let severity: String = row.get(2)?;
-                let status: String = row.get(6)?;
-                let created_at: String = row.get(7)?;
-                let resolved_at: Option<String> = row.get(8)?;
-
-                Ok(LintFinding {
-                    id: parse_uuid_or_nil(&id),
-                    scope: lint_scope_from_str(&scope),
-                    severity: lint_severity_from_str(&severity),
-                    kind: row.get(3)?,
-                    message: row.get(4)?,
-                    evidence_json: row.get(5)?,
-                    status: lint_status_from_str(&status),
-                    created_at: parse_datetime_or_now(&created_at),
-                    resolved_at: resolved_at.as_deref().map(parse_datetime_or_now),
-                })
-            })
-            .map_err(|_| AppError::StatePoisoned("failed to query lint findings"))?;
-
-        rows.collect::<Result<Vec<_>, _>>()
-            .map_err(|_| AppError::StatePoisoned("failed to read lint finding rows"))
-    }
-}
-
 impl WorkingMemoryRepository for SqliteScreenplayRepository {
     fn load_working_memory(
         &self,
@@ -1395,43 +1008,53 @@ impl WorkingMemoryRepository for SqliteScreenplayRepository {
         let connection = self.connection()?;
         connection
             .query_row(
-                "SELECT conversation_mode, conversation_topic, current_focus_json, constraints_json, open_questions_json, pinned_decisions_json, active_assumptions_json, recent_corrections_json, last_tool_actions_json, updated_at, story_backlog_json
+                "SELECT conversation_mode, conversation_topic, turn_count, current_focus_json, constraints_json, open_questions_json, pinned_decisions_json, active_assumptions_json, recent_corrections_json, last_tool_actions_json, updated_at, story_backlog_json, current_thread_json, sidequests_json, return_thread_json
                  FROM assistant_working_memory
                  WHERE project_id = ?1 AND session_id = ?2",
                 params![project_id, session_id],
                 |row| {
                     let conversation_mode: String = row.get(0)?;
                     let conversation_topic: String = row.get(1)?;
-                    let current_focus_json: Option<String> = row.get(2)?;
-                    let constraints_json: String = row.get(3)?;
-                    let open_questions_json: String = row.get(4)?;
-                    let pinned_decisions_json: String = row.get(5)?;
-                    let active_assumptions_json: String = row.get(6)?;
-                    let recent_corrections_json: String = row.get(7)?;
-                    let last_tool_actions_json: String = row.get(8)?;
-                    let updated_at: String = row.get(9)?;
-                    let story_backlog_json: String = row.get(10)?;
+                    let turn_count: i64 = row.get(2)?;
+                    let current_focus_json: Option<String> = row.get(3)?;
+                    let constraints_json: String = row.get(4)?;
+                    let open_questions_json: String = row.get(5)?;
+                    let pinned_decisions_json: String = row.get(6)?;
+                    let active_assumptions_json: String = row.get(7)?;
+                    let recent_corrections_json: String = row.get(8)?;
+                    let last_tool_actions_json: String = row.get(9)?;
+                    let updated_at: String = row.get(10)?;
+                    let story_backlog_json: String = row.get(11)?;
+                    let current_thread_json: String = row.get(12)?;
+                    let sidequests_json: String = row.get(13)?;
+                    let return_thread_json: String = row.get(14)?;
 
-                    Ok(WorkingMemory {
+                    let conversation_topic = match conversation_topic.as_str() {
+                        "Setting" => crate::domain::ConversationTopic::Setting,
+                        "Character" => crate::domain::ConversationTopic::Character,
+                        "Event" => crate::domain::ConversationTopic::Event,
+                        "Relationship" => crate::domain::ConversationTopic::Relationship,
+                        _ => crate::domain::ConversationTopic::General,
+                    };
+                    let current_focus = current_focus_json
+                        .as_deref()
+                        .and_then(|value| serde_json::from_str::<FocusItem>(value).ok());
+                    let open_questions: Vec<crate::domain::OpenQuestion> =
+                        serde_json::from_str(&open_questions_json).unwrap_or_default();
+
+                    let mut memory = WorkingMemory {
                         project_id: project_id.to_string(),
                         session_id: session_id.to_string(),
+                        turn_count: turn_count.max(0) as u32,
                         conversation_mode: match conversation_mode.as_str() {
                             "Refining" => crate::domain::ConversationMode::Refining,
                             "Committing" => crate::domain::ConversationMode::Committing,
                             _ => crate::domain::ConversationMode::Brainstorming,
                         },
-                        conversation_topic: match conversation_topic.as_str() {
-                            "Setting" => crate::domain::ConversationTopic::Setting,
-                            "Character" => crate::domain::ConversationTopic::Character,
-                            "Event" => crate::domain::ConversationTopic::Event,
-                            "Relationship" => crate::domain::ConversationTopic::Relationship,
-                            _ => crate::domain::ConversationTopic::General,
-                        },
-                        current_focus: current_focus_json
-                            .as_deref()
-                            .and_then(|value| serde_json::from_str::<FocusItem>(value).ok()),
+                        conversation_topic: conversation_topic.clone(),
+                        current_focus: current_focus.clone(),
                         constraints: serde_json::from_str(&constraints_json).unwrap_or_default(),
-                        open_questions: serde_json::from_str(&open_questions_json).unwrap_or_default(),
+                        open_questions: open_questions.clone(),
                         pinned_decisions: serde_json::from_str(&pinned_decisions_json).unwrap_or_default(),
                         active_assumptions: serde_json::from_str(&active_assumptions_json)
                             .unwrap_or_default(),
@@ -1440,8 +1063,26 @@ impl WorkingMemoryRepository for SqliteScreenplayRepository {
                         last_tool_actions: serde_json::from_str(&last_tool_actions_json)
                             .unwrap_or_default(),
                         story_backlog: serde_json::from_str(&story_backlog_json).unwrap_or_default(),
+                        current_thread: serde_json::from_str(&current_thread_json).unwrap_or_else(|_| {
+                            crate::domain::NarrativeThread {
+                                id: "main-thread".to_string(),
+                                goal: "Shape the story".to_string(),
+                                status: crate::domain::NarrativeThreadStatus::Active,
+                                thread_status: crate::domain::ThreadStatus::Active,
+                                scope: crate::domain::ThreadScope::Main,
+                                return_to_thread_id: None,
+                                topic: conversation_topic.clone(),
+                                current_focus: current_focus.clone(),
+                                open_questions: open_questions.clone(),
+                                turn_count: turn_count.max(0) as u32,
+                            }
+                        }),
+                        return_thread: serde_json::from_str(&return_thread_json).unwrap_or(None),
+                        sidequests: serde_json::from_str(&sidequests_json).unwrap_or_default(),
                         updated_at: parse_datetime_or_now(&updated_at),
-                    })
+                    };
+                    sync_thread_fields(&mut memory);
+                    Ok(memory)
                 },
             )
             .optional()
@@ -1480,15 +1121,22 @@ impl WorkingMemoryRepository for SqliteScreenplayRepository {
             .map_err(|_| AppError::StatePoisoned("failed to serialize tool actions"))?;
         let story_backlog_json = serde_json::to_string(&memory.story_backlog)
             .map_err(|_| AppError::StatePoisoned("failed to serialize story backlog"))?;
+        let current_thread_json = serde_json::to_string(&memory.current_thread)
+            .map_err(|_| AppError::StatePoisoned("failed to serialize current thread"))?;
+        let sidequests_json = serde_json::to_string(&memory.sidequests)
+            .map_err(|_| AppError::StatePoisoned("failed to serialize sidequests"))?;
+        let return_thread_json = serde_json::to_string(&memory.return_thread)
+            .map_err(|_| AppError::StatePoisoned("failed to serialize return thread"))?;
 
         connection
             .execute(
                 "INSERT INTO assistant_working_memory
-                    (project_id, session_id, conversation_mode, conversation_topic, current_focus_json, constraints_json, open_questions_json, pinned_decisions_json, active_assumptions_json, recent_corrections_json, last_tool_actions_json, updated_at, story_backlog_json)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
+                    (project_id, session_id, conversation_mode, conversation_topic, turn_count, current_focus_json, constraints_json, open_questions_json, pinned_decisions_json, active_assumptions_json, recent_corrections_json, last_tool_actions_json, updated_at, story_backlog_json, current_thread_json, sidequests_json, return_thread_json)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)
                  ON CONFLICT(project_id, session_id) DO UPDATE SET
                     conversation_mode = excluded.conversation_mode,
                     conversation_topic = excluded.conversation_topic,
+                    turn_count = excluded.turn_count,
                     current_focus_json = excluded.current_focus_json,
                     constraints_json = excluded.constraints_json,
                     open_questions_json = excluded.open_questions_json,
@@ -1497,7 +1145,10 @@ impl WorkingMemoryRepository for SqliteScreenplayRepository {
                     recent_corrections_json = excluded.recent_corrections_json,
                     last_tool_actions_json = excluded.last_tool_actions_json,
                     updated_at = excluded.updated_at,
-                    story_backlog_json = excluded.story_backlog_json",
+                    story_backlog_json = excluded.story_backlog_json,
+                    current_thread_json = excluded.current_thread_json,
+                    sidequests_json = excluded.sidequests_json,
+                    return_thread_json = excluded.return_thread_json",
                 params![
                     memory.project_id,
                     memory.session_id,
@@ -1513,6 +1164,7 @@ impl WorkingMemoryRepository for SqliteScreenplayRepository {
                         crate::domain::ConversationTopic::Relationship => "Relationship",
                         crate::domain::ConversationTopic::General => "General",
                     },
+                    memory.turn_count as i64,
                     current_focus_json,
                     constraints_json,
                     open_questions_json,
@@ -1522,6 +1174,9 @@ impl WorkingMemoryRepository for SqliteScreenplayRepository {
                     last_tool_actions_json,
                     memory.updated_at.to_rfc3339(),
                     story_backlog_json,
+                    current_thread_json,
+                    sidequests_json,
+                    return_thread_json,
                 ],
             )
             .map_err(|_| AppError::StatePoisoned("failed to save assistant working memory"))?;
@@ -1538,28 +1193,6 @@ fn parse_datetime_or_now(value: &str) -> DateTime<Utc> {
     DateTime::parse_from_rfc3339(value)
         .map(|dt| dt.with_timezone(&Utc))
         .unwrap_or_else(|_| Utc::now())
-}
-
-fn map_document_ontology_link_row(
-    row: &rusqlite::Row<'_>,
-) -> rusqlite::Result<DocumentOntologyLink> {
-    let id: String = row.get(0)?;
-    let status: String = row.get(5)?;
-    let provenance_id: Option<String> = row.get(6)?;
-    let created_at: String = row.get(7)?;
-    let updated_at: String = row.get(8)?;
-
-    Ok(DocumentOntologyLink {
-        id: parse_uuid_or_nil(&id),
-        document_ref: row.get(1)?,
-        ontology_ref: row.get(2)?,
-        link_kind: row.get(3)?,
-        confidence: row.get(4)?,
-        status: link_status_from_str(&status),
-        provenance_id: provenance_id.as_deref().map(parse_uuid_or_nil),
-        created_at: parse_datetime_or_now(&created_at),
-        updated_at: parse_datetime_or_now(&updated_at),
-    })
 }
 
 fn ontology_entity_kind_to_str(kind: &OntologyEntityKind) -> &'static str {
@@ -1742,88 +1375,13 @@ fn candidate_status_from_str(value: &str) -> CandidateStatus {
     }
 }
 
-fn conflict_kind_to_str(value: &crate::domain::ConflictKind) -> &'static str {
-    match value {
-        crate::domain::ConflictKind::AmbiguousMatch => "ambiguous_match",
-        crate::domain::ConflictKind::DuplicateEntity => "duplicate_entity",
-        crate::domain::ConflictKind::VersionMismatch => "version_mismatch",
-        crate::domain::ConflictKind::ContradictoryTimeline => "contradictory_timeline",
-        crate::domain::ConflictKind::UnsupportedPatch => "unsupported_patch",
-    }
-}
-
-fn conflict_kind_from_str(value: &str) -> crate::domain::ConflictKind {
-    match value {
-        "duplicate_entity" => crate::domain::ConflictKind::DuplicateEntity,
-        "version_mismatch" => crate::domain::ConflictKind::VersionMismatch,
-        "contradictory_timeline" => crate::domain::ConflictKind::ContradictoryTimeline,
-        "unsupported_patch" => crate::domain::ConflictKind::UnsupportedPatch,
-        _ => crate::domain::ConflictKind::AmbiguousMatch,
-    }
-}
-
-fn link_status_to_str(value: &crate::domain::LinkStatus) -> &'static str {
-    match value {
-        crate::domain::LinkStatus::Linked => "linked",
-        crate::domain::LinkStatus::Suggested => "suggested",
-        crate::domain::LinkStatus::Conflicted => "conflicted",
-        crate::domain::LinkStatus::Orphaned => "orphaned",
-    }
-}
-
-fn link_status_from_str(value: &str) -> crate::domain::LinkStatus {
-    match value {
-        "suggested" => crate::domain::LinkStatus::Suggested,
-        "conflicted" => crate::domain::LinkStatus::Conflicted,
-        "orphaned" => crate::domain::LinkStatus::Orphaned,
-        _ => crate::domain::LinkStatus::Linked,
-    }
-}
-
-fn lint_scope_to_str(value: &LintScope) -> &'static str {
-    match value {
-        LintScope::Document => "document",
-        LintScope::Ontology => "ontology",
-        LintScope::Alignment => "alignment",
-    }
-}
-
-fn lint_scope_from_str(value: &str) -> LintScope {
-    match value {
-        "document" => LintScope::Document,
-        "alignment" => LintScope::Alignment,
-        _ => LintScope::Ontology,
-    }
-}
-
-fn lint_severity_to_str(value: &LintSeverity) -> &'static str {
-    match value {
-        LintSeverity::Info => "info",
-        LintSeverity::Warning => "warning",
-        LintSeverity::Error => "error",
-    }
-}
-
-fn lint_severity_from_str(value: &str) -> LintSeverity {
-    match value {
-        "warning" => LintSeverity::Warning,
-        "error" => LintSeverity::Error,
-        _ => LintSeverity::Info,
-    }
-}
-
-fn lint_status_to_str(value: &LintStatus) -> &'static str {
-    match value {
-        LintStatus::Open => "open",
-        LintStatus::Resolved => "resolved",
-        LintStatus::Dismissed => "dismissed",
-    }
-}
-
-fn lint_status_from_str(value: &str) -> LintStatus {
-    match value {
-        "resolved" => LintStatus::Resolved,
-        "dismissed" => LintStatus::Dismissed,
-        _ => LintStatus::Open,
+fn sync_thread_fields(memory: &mut WorkingMemory) {
+    memory.conversation_topic = memory.current_thread.topic.clone();
+    memory.current_focus = memory.current_thread.current_focus.clone();
+    memory.turn_count = memory.current_thread.turn_count;
+    if memory.open_questions.is_empty() {
+        memory.open_questions = memory.current_thread.open_questions.clone();
+    } else {
+        memory.current_thread.open_questions = memory.open_questions.clone();
     }
 }

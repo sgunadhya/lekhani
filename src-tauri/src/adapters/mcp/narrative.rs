@@ -10,6 +10,7 @@ fn runtime_deps<'a>(state: &'a AppState) -> NarrativeRuntimeDeps<'a> {
         mutation_gateway: state,
         generation_gateway: state,
         conversation_support: state,
+        narrative_engine: state.narrative_engine.as_ref(),
     }
 }
 

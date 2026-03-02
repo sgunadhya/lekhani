@@ -5,14 +5,17 @@ use std::time::Duration;
 use uuid::Uuid;
 
 use super::StubNarrativeEngine;
-use crate::application::{DialogueAct, DialogueActClassifier, DialogueActContext};
+use crate::application::{
+    DialogueAct, DialogueActClassifier, DialogueActContext, InterpretationTarget,
+    TurnInterpretation, TurnRoute,
+};
+use crate::domain::ConversationTopic;
 use crate::domain::{
-    AssistantIntent, NarrativeCharacter, NarrativeEvent, NarrativeNudge, NarrativeSnapshot,
-    WorkingMemory,
+    AssistantIntent, NarrativeCharacter, NarrativeEvent, NarrativeSnapshot, WorkingMemory,
 };
 use crate::ports::{
     AssistantAgent, AssistantResponse, CharacterParser, EventParser, FollowUpDirective,
-    NarrativeProvider, NudgeGenerator,
+    NarrativeProvider,
 };
 
 #[derive(Clone)]
@@ -167,7 +170,7 @@ impl LmStudioNarrativeEngine {
 }
 
 impl DialogueActClassifier for LmStudioNarrativeEngine {
-    fn classify(&self, context: DialogueActContext<'_>) -> DialogueAct {
+    fn classify(&self, context: DialogueActContext<'_>) -> TurnInterpretation {
         let value = self.respond_json(
             "classify_dialogue_act",
             DIALOGUE_ACT_SYSTEM_PROMPT,
@@ -183,24 +186,12 @@ impl DialogueActClassifier for LmStudioNarrativeEngine {
                     .unwrap_or("None")
             ),
         );
-        match value
-            .ok()
-            .and_then(|value| value.get("dialogue_act").and_then(|v| v.as_str()).map(str::to_string))
-            .as_deref()
-        {
-            Some("Query") => DialogueAct::Query,
-            Some("Constraint") => DialogueAct::Constraint,
-            Some("Correction") => DialogueAct::Correction,
-            Some("Confirmation") => DialogueAct::Confirmation,
-            Some("Commit") => DialogueAct::Commit,
-            Some("RewriteRequest") => DialogueAct::RewriteRequest,
-            _ => DialogueAct::Brainstorm,
-        }
+        value.ok().map_or(default_interpretation(), |value| interpretation_from_value(&value))
     }
 }
 
 impl NarrativeProvider for LmStudioNarrativeEngine {
-    fn classify_dialogue_act(&self, context: DialogueActContext<'_>) -> DialogueAct {
+    fn classify_dialogue_act(&self, context: DialogueActContext<'_>) -> TurnInterpretation {
         <Self as DialogueActClassifier>::classify(self, context)
     }
 }
@@ -385,42 +376,6 @@ impl AssistantAgent for LmStudioNarrativeEngine {
         )?;
         Ok(final_reply("Screenplay Draft", AssistantIntent::MutateDocument, reply))
     }
-
-    fn generate_nudge(
-        &self,
-        snapshot: &NarrativeSnapshot,
-        memory: &WorkingMemory,
-    ) -> Result<NarrativeNudge, String> {
-        let open_tasks: Vec<_> = memory
-            .story_backlog
-            .iter()
-            .filter(|t| matches!(t.status, crate::domain::TaskStatus::Open))
-            .map(|t| t.description.as_str())
-            .collect();
-        let value = self.respond_json(
-            "generate_nudge",
-            NUDGE_SYSTEM_PROMPT,
-            &format!(
-                "Open Goals: {:?}\nModel Status: {} characters, {} events.",
-                open_tasks,
-                snapshot.characters.len(),
-                snapshot.events.len()
-            ),
-        )?;
-        let message = value
-            .get("message")
-            .and_then(|v| v.as_str())
-            .map(str::trim)
-            .filter(|v| !v.is_empty())
-            .map(str::to_string)
-            .or_else(|| {
-                AssistantAgent::generate_nudge(&StubNarrativeEngine, snapshot, memory)
-                    .ok()
-                    .map(|n| n.message)
-            })
-            .ok_or_else(|| "LM Studio returned a nudge without a message".to_string())?;
-        Ok(NarrativeNudge { message })
-    }
 }
 
 impl CharacterParser for LmStudioNarrativeEngine {
@@ -480,13 +435,6 @@ impl EventParser for LmStudioNarrativeEngine {
             summary: value["summary"].as_str().unwrap_or(description).trim().to_string(),
             participants: resolve_participants_from_value(&value, snapshot),
         })
-    }
-}
-
-impl NudgeGenerator for LmStudioNarrativeEngine {
-    fn generate_nudge(&self, snapshot: &NarrativeSnapshot) -> Result<NarrativeNudge, String> {
-        let memory = WorkingMemory::default();
-        <Self as AssistantAgent>::generate_nudge(self, snapshot, &memory)
     }
 }
 
@@ -552,9 +500,59 @@ fn parse_focus_reply(value: Value, fallback_focus: &str) -> Result<FocusReply, S
     Ok(FocusReply { focus_summary, body })
 }
 
-fn final_reply(title: &str, intent: AssistantIntent, reply: FocusReply) -> AssistantResponse {
+fn default_interpretation() -> TurnInterpretation {
+    TurnInterpretation {
+        dialogue_act: DialogueAct::Brainstorm,
+        target: InterpretationTarget::General,
+        route: TurnRoute::Continue,
+        confidence: 0.0,
+    }
+}
+
+fn interpretation_from_value(value: &Value) -> TurnInterpretation {
+    let dialogue_act = match value.get("dialogue_act").and_then(|v| v.as_str()) {
+        Some("Query") => DialogueAct::Query,
+        Some("Constraint") => DialogueAct::Constraint,
+        Some("Correction") => DialogueAct::Correction,
+        Some("Confirmation") => DialogueAct::Confirmation,
+        Some("Commit") => DialogueAct::Commit,
+        Some("RewriteRequest") => DialogueAct::RewriteRequest,
+        _ => DialogueAct::Brainstorm,
+    };
+    let target = match value.get("target").and_then(|v| v.as_str()) {
+        Some("current_candidate") => InterpretationTarget::CurrentCandidate,
+        Some("screenplay") => InterpretationTarget::Screenplay,
+        Some("setting") => InterpretationTarget::NewTopic(ConversationTopic::Setting),
+        Some("character") => InterpretationTarget::NewTopic(ConversationTopic::Character),
+        Some("event") => InterpretationTarget::NewTopic(ConversationTopic::Event),
+        Some("relationship") => InterpretationTarget::NewTopic(ConversationTopic::Relationship),
+        _ => InterpretationTarget::General,
+    };
+    let confidence = value
+        .get("confidence")
+        .and_then(|v| v.as_f64())
+        .map(|v| v.clamp(0.0, 1.0) as f32)
+        .unwrap_or(0.5);
+    let route = match value.get("route").and_then(|v| v.as_str()) {
+        Some("ElaborateCurrent") => TurnRoute::ElaborateCurrent,
+        Some("AlternativeCurrent") => TurnRoute::AlternativeCurrent,
+        Some("ConfirmCurrent") => TurnRoute::ConfirmCurrent,
+        Some("RejectCurrent") => TurnRoute::RejectCurrent,
+        Some("ShiftToCharacter") => TurnRoute::ShiftToCharacter,
+        Some("ShiftToEvent") => TurnRoute::ShiftToEvent,
+        Some("AddToScreenplay") => TurnRoute::AddToScreenplay,
+        _ => TurnRoute::Continue,
+    };
+    TurnInterpretation {
+        dialogue_act,
+        target,
+        route,
+        confidence,
+    }
+}
+
+fn final_reply(title: &str, _intent: AssistantIntent, reply: FocusReply) -> AssistantResponse {
     AssistantResponse::FinalReply {
-        intent,
         title: title.to_string(),
         focus_summary: Some(reply.focus_summary),
         body: clean_conversational_text(&reply.body),
@@ -680,7 +678,10 @@ fn trace_block(label: &str, stage: &str, body: &str) {
 }
 
 const DIALOGUE_ACT_SYSTEM_PROMPT: &str = r#"Classify the writer's turn for a story-building assistant.
-Return exactly one JSON object: {"dialogue_act":"Query|Brainstorm|Constraint|Correction|Confirmation|Commit|RewriteRequest"}."#;
+Return exactly one JSON object: {"dialogue_act":"Query|Brainstorm|Constraint|Correction|Confirmation|Commit|RewriteRequest","target":"current_candidate|setting|character|event|relationship|screenplay|general","route":"Continue|ElaborateCurrent|AlternativeCurrent|ConfirmCurrent|RejectCurrent|ShiftToCharacter|ShiftToEvent|AddToScreenplay","confidence":0.0}.
+Choose target based on what the writer is acting on.
+Choose route based on the most likely next conversational move relative to the current thread or candidate.
+Confidence should be between 0 and 1."#;
 
 const FOLLOWUP_INTERPRETER_SYSTEM_PROMPT: &str = r#"You classify follow-up intent for an active story conversation.
 Return exactly one JSON object: {"directive":"ElaborateCurrent|AlternativeOption|ConfirmCurrent|RejectCurrent|ShiftToCharacter|ShiftToEvent|AddToScreenplay|Unknown"}."#;
@@ -703,9 +704,6 @@ Return exactly one JSON object with keys focus_summary and body."#;
 
 const SCREENPLAY_DRAFT_SYSTEM_PROMPT: &str = r#"You turn a chosen story idea into screenplay-ready draft text.
 Return exactly one JSON object with keys focus_summary and body."#;
-
-const NUDGE_SYSTEM_PROMPT: &str = r#"You are a story coach.
-Return exactly one JSON object with key message."#;
 
 const CHARACTER_INSTRUCTIONS: &str = r#"Extract a screenplay character.
 Return exactly one JSON object with keys name, summary, tags."#;

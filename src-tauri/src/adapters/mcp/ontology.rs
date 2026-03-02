@@ -12,7 +12,6 @@ use super::{McpToolCall, McpToolResult};
 
 pub fn execute(state: &AppState, call: McpToolCall) -> Result<McpToolResult, String> {
     match call {
-        McpToolCall::GetNarrativeSnapshot => state.get_snapshot().map(McpToolResult::Snapshot),
         McpToolCall::ProposeOntologyCommit {
             sync_run_id,
             title,
@@ -77,6 +76,5 @@ pub fn execute(state: &AppState, call: McpToolCall) -> Result<McpToolResult, Str
                 .map(|_| McpToolResult::Empty)
                 .map_err(|err: AppError| err.to_string())
         }
-        _ => Err("unsupported ontology tool call or direct mutation bypass attempted".to_string()),
     }
 }

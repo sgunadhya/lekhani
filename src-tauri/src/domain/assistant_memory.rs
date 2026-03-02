@@ -1,5 +1,6 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use crate::domain::narrative_engine::{ThreadScope, ThreadStatus};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum AssistantIntent {
@@ -49,11 +50,21 @@ pub enum ConversationTopic {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub enum NarrativeThreadStatus {
+    Active,
+    Parked,
+    Committed,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum NarrativeSuggestionAction {
     UseThis,
     TryAnother,
     ExpandThis,
     AddToScreenplay,
+    ParkThread,
+    ResumeThread,
+    CommitSidequest,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -188,12 +199,33 @@ pub struct StoryTask {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NarrativeThread {
+    pub id: String,
+    pub goal: String,
+    pub status: NarrativeThreadStatus,
+    #[serde(default)]
+    pub thread_status: ThreadStatus,
+    #[serde(default)]
+    pub scope: ThreadScope,
+    #[serde(default)]
+    pub return_to_thread_id: Option<String>,
+    pub topic: ConversationTopic,
+    pub current_focus: Option<FocusItem>,
+    pub open_questions: Vec<OpenQuestion>,
+    pub turn_count: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkingMemory {
     pub project_id: String,
     pub session_id: String,
+    pub turn_count: u32,
     pub conversation_mode: ConversationMode,
     pub conversation_topic: ConversationTopic,
     pub current_focus: Option<FocusItem>,
+    pub current_thread: NarrativeThread,
+    pub return_thread: Option<NarrativeThread>,
+    pub sidequests: Vec<NarrativeThread>,
     pub constraints: Vec<Constraint>,
     pub story_backlog: Vec<StoryTask>,
     pub open_questions: Vec<OpenQuestion>,
@@ -209,9 +241,24 @@ impl Default for WorkingMemory {
         Self {
             project_id: "current-project".to_string(),
             session_id: "main".to_string(),
+            turn_count: 0,
             conversation_mode: ConversationMode::Brainstorming,
             conversation_topic: ConversationTopic::General,
             current_focus: None,
+            current_thread: NarrativeThread {
+                id: "main-thread".to_string(),
+                goal: "Shape the story".to_string(),
+                status: NarrativeThreadStatus::Active,
+                thread_status: ThreadStatus::Active,
+                scope: ThreadScope::Main,
+                return_to_thread_id: None,
+                topic: ConversationTopic::General,
+                current_focus: None,
+                open_questions: Vec::new(),
+                turn_count: 0,
+            },
+            return_thread: None,
+            sidequests: Vec::new(),
             constraints: Vec::new(),
             story_backlog: Vec::new(),
             open_questions: Vec::new(),

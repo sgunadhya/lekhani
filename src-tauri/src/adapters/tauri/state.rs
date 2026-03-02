@@ -1,19 +1,17 @@
 use crate::adapters::db::SqliteScreenplayRepository;
 use crate::application::{
-    AssistantCapabilityPlanner, AssistantFallbackResponder, AssistantIntentContext,
-    BeliefStateUpdater, CapabilityPlan, CapabilityPlanningContext, DialogueAct,
-    DialogueActContext, DialogueStateContext, DialogueStateUpdate,
-    MutationGate, NarrativeConversationSupport, NarrativeService, ResponseStateFinalizer,
+    AssistantCapabilityPlanner, BeliefStateUpdater, CapabilityPlan,
+    CapabilityPlanningContext, DialogueActContext, DialogueStateContext, DialogueStateUpdate,
+    NarrativeEngine, NarrativeConversationSupport, NarrativeService, ResponseStateFinalizer,
     ScreenplayService,
 };
 use crate::domain::{
-    AppError, ConversationTopic, NarrativeCharacter, NarrativeEvent, NarrativeMessagePreview,
-    NarrativeSnapshot, OntologyEntity, OntologyEntityKind, OntologyRelationship, StorySnapshot,
-    WorkingMemory,
+    AppError, ConversationTopic, NarrativeCharacter, NarrativeEvent, NarrativeSnapshot,
+    OntologyEntity, OntologyEntityKind, StorySnapshot, WorkingMemory,
 };
 use crate::ports::{
     CharacterParser, EventParser, MutationGateway, NarrativeGenerationGateway,
-    NarrativeProvider, NarrativeRepository, NudgeGenerator, QueryGateway, ScreenplayRepository,
+    NarrativeProvider, NarrativeRepository, QueryGateway, ScreenplayRepository,
     WorkingMemoryRepository,
 };
 use std::path::Path;
@@ -21,17 +19,12 @@ use std::sync::Arc;
 
 pub struct AppState {
     pub screenplay_service: ScreenplayService<Box<dyn ScreenplayRepository>>,
-    pub narrative_service: NarrativeService<
-        Box<dyn CharacterParser>,
-        Box<dyn EventParser>,
-        Box<dyn NudgeGenerator>,
-    >,
+    pub narrative_service: NarrativeService<Box<dyn CharacterParser>, Box<dyn EventParser>>,
     pub narrative_provider: Box<dyn NarrativeProvider>,
     pub belief_state_updater: Box<dyn BeliefStateUpdater>,
     pub assistant_capability_planner: Box<dyn AssistantCapabilityPlanner>,
-    pub assistant_fallback_responder: Box<dyn AssistantFallbackResponder>,
     pub response_state_finalizer: Box<dyn ResponseStateFinalizer>,
-    pub mutation_gate: Box<dyn MutationGate>,
+    pub narrative_engine: Box<dyn NarrativeEngine>,
     pub narrative_repository: Box<dyn NarrativeRepository>,
     pub sqlite_repository: Option<Arc<SqliteScreenplayRepository>>,
     pub llm_backend: String,
@@ -48,26 +41,19 @@ impl AppState {
         narrative_provider: Box<dyn NarrativeProvider>,
         belief_state_updater: Box<dyn BeliefStateUpdater>,
         assistant_capability_planner: Box<dyn AssistantCapabilityPlanner>,
-        assistant_fallback_responder: Box<dyn AssistantFallbackResponder>,
         response_state_finalizer: Box<dyn ResponseStateFinalizer>,
-        mutation_gate: Box<dyn MutationGate>,
+        narrative_engine: Box<dyn NarrativeEngine>,
         character_parser: Box<dyn CharacterParser>,
         event_parser: Box<dyn EventParser>,
-        nudge_generator: Box<dyn NudgeGenerator>,
     ) -> Self {
         Self {
             screenplay_service: ScreenplayService::new(screenplay_repository),
-            narrative_service: NarrativeService::new(
-                character_parser,
-                event_parser,
-                nudge_generator,
-            ),
+            narrative_service: NarrativeService::new(character_parser, event_parser),
             narrative_provider,
             belief_state_updater,
             assistant_capability_planner,
-            assistant_fallback_responder,
             response_state_finalizer,
-            mutation_gate,
+            narrative_engine,
             narrative_repository,
             sqlite_repository,
             llm_backend,
@@ -79,10 +65,6 @@ impl AppState {
 impl QueryGateway for AppState {
     fn load_working_memory(&self) -> Result<WorkingMemory, String> {
         self.get_working_memory()
-    }
-
-    fn load_narrative_snapshot(&self) -> Result<NarrativeSnapshot, String> {
-        self.get_snapshot()
     }
 
     fn load_story_snapshot(&self) -> Result<StorySnapshot, String> {
@@ -154,42 +136,10 @@ impl MutationGateway for AppState {
 
         Ok(true)
     }
-
-    fn propose_preview(&self, preview: &NarrativeMessagePreview) -> Result<bool, String> {
-        if let Some(character) = preview.character.as_ref() {
-            self.propose_ontology_entity(
-                format!("Character proposal: {}", character.name),
-                character.summary.clone(),
-                OntologyEntity {
-                    id: uuid::Uuid::new_v4(),
-                    kind: OntologyEntityKind::Character,
-                    label: character.name.clone(),
-                    summary: character.summary.clone(),
-                },
-            )?;
-            return Ok(true);
-        }
-
-        if let Some(event) = preview.event.as_ref() {
-            self.propose_ontology_entity(
-                format!("Event proposal: {}", event.title),
-                event.summary.clone(),
-                OntologyEntity {
-                    id: uuid::Uuid::new_v4(),
-                    kind: OntologyEntityKind::Event,
-                    label: event.title.clone(),
-                    summary: event.summary.clone(),
-                },
-            )?;
-            return Ok(true);
-        }
-
-        Ok(false)
-    }
 }
 
 impl NarrativeConversationSupport for AppState {
-    fn classify_dialogue_act(&self, context: DialogueActContext<'_>) -> DialogueAct {
+    fn classify_dialogue_act(&self, context: DialogueActContext<'_>) -> crate::application::TurnInterpretation {
         self.narrative_provider.classify_dialogue_act(context)
     }
 
@@ -200,22 +150,6 @@ impl NarrativeConversationSupport for AppState {
     fn plan_capabilities(&self, context: CapabilityPlanningContext<'_>) -> CapabilityPlan {
         self.assistant_capability_planner.plan(context)
     }
-
-    fn allow_mutation(&self, context: AssistantIntentContext<'_>) -> bool {
-        self.mutation_gate.allow_mutation(context)
-    }
-
-    fn fallback_response(
-        &self,
-        prompt: &str,
-        preview: &crate::domain::NarrativeMessagePreview,
-        memory: &WorkingMemory,
-        plan: &CapabilityPlan,
-    ) -> crate::ports::AssistantResponse {
-        self.assistant_fallback_responder
-            .respond(prompt, preview, memory, plan)
-    }
-
     fn finalize_response_state(
         &self,
         memory: WorkingMemory,
@@ -346,13 +280,6 @@ impl AppState {
         }
 
         Ok(())
-    }
-
-    pub fn store_relationship(&self, relationship: OntologyRelationship) -> Result<(), String> {
-        self.narrative_repository
-            .save_relationship(relationship)
-            .map(|_| ())
-            .map_err(|err| err.to_string())
     }
 
     pub fn current_project_path(&self) -> Result<Option<String>, String> {

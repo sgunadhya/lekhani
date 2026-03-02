@@ -1,7 +1,7 @@
 use crate::api::tauri;
 use crate::state::document::DocumentContext;
 use crate::state::app_mode::AppMode;
-use crate::state::narrative::{create_nudge_resource, NarrativeChatContext};
+use crate::state::narrative::NarrativeChatContext;
 use crate::views::chat::ChatInterface;
 use crate::views::editor::ScreenplayEditor;
 use crate::views::timeline::TimelineView;
@@ -12,8 +12,6 @@ pub fn WorkspaceShell() -> impl IntoView {
     let (mode, set_mode) = create_signal(AppMode::Narrative);
     let document = create_rw_signal(None);
     let file_path = create_rw_signal(None);
-    let (nudge_nonce, set_nudge_nonce) = create_signal(0_u64);
-    let nudge = create_nudge_resource(nudge_nonce);
     let active_project = create_local_resource(|| (), |_| async move { tauri::get_current_project().await });
     let narrative_chat = NarrativeChatContext::new();
 
@@ -41,8 +39,6 @@ pub fn WorkspaceShell() -> impl IntoView {
             .await;
         }
     });
-
-    let refresh_nudge = move |_| set_nudge_nonce.update(|value| *value += 1);
 
     let open_document = move || {
         let document = document;
@@ -235,10 +231,9 @@ pub fn WorkspaceShell() -> impl IntoView {
 
                         <section class="rail-section">
                             <span class="eyebrow">"Current Nudge"</span>
-                            {move || match nudge.get() {
-                                None => view! { <p>"Loading nudge..."</p> }.into_view(),
-                                Some(Ok(nudge)) => view! { <p>{nudge.message}</p> }.into_view(),
-                                Some(Err(err)) => view! { <p class="error">{err}</p> }.into_view(),
+                            {move || match narrative_chat.last_evaluation_nudge.get() {
+                                Some(nudge) => view! { <p>{nudge}</p> }.into_view(),
+                                None => view! { <p class="muted">"Take one more turn to surface the next move."</p> }.into_view(),
                             }}
                         </section>
 
@@ -249,9 +244,6 @@ pub fn WorkspaceShell() -> impl IntoView {
                                 <li>"Clarify the opening event"</li>
                                 <li>"Link narrative setup back to Fountain scenes"</li>
                             </ul>
-                            <div class="rail-actions">
-                                <button class="secondary-button" on:click=refresh_nudge>"Refresh Nudge"</button>
-                            </div>
                         </section>
                     </aside>
                 </Show>

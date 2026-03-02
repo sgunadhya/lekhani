@@ -3,11 +3,12 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::domain::{
-    AssistantCapability, AssistantIntent, ChangeType, NarrativeCharacter, NarrativeCommitTarget,
-    NarrativeEvent, NarrativeMessagePreview, NarrativeNudge, NarrativeSnapshot,
+    AssistantCapability, AssistantIntent, BeatId, ChangeType, NarrativeCharacter,
+    NarrativeEvent, NarrativeMessagePreview, NarrativeMode, NarrativeSnapshot,
     NarrativeSuggestedAction, NarrativeSuggestionAction, ProvenanceRecord, SyncCandidate,
-    SyncRun, WorkingMemory, WritePolicy,
+    SyncRun, ThreadStatus, WorkingMemory, WritePolicy,
 };
+use crate::application::{InterpretationTarget, TurnRoute};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ScreenplayChangeDto {
@@ -77,8 +78,15 @@ pub struct AssistantTurnDto {
     pub intent: AssistantIntent,
     pub capabilities: Vec<AssistantCapability>,
     pub write_policy: WritePolicy,
+    pub interpretation_target: InterpretationTarget,
+    pub interpretation_route: TurnRoute,
+    pub interpretation_confidence: f32,
     pub reply_title: String,
     pub reply_body: String,
+    pub narrative_mode: NarrativeMode,
+    pub thread_status: ThreadStatus,
+    pub active_beat: Option<BeatId>,
+    pub evaluation_nudge: Option<String>,
     pub committed: NarrativeMessagePreview,
     pub working_memory: WorkingMemory,
     pub suggested_actions: Vec<NarrativeSuggestedAction>,
@@ -100,8 +108,6 @@ pub struct LlmStatusDto {
 }
 
 pub type NarrativeCharacterDto = NarrativeCharacter;
-pub type NarrativeCommitTargetDto = NarrativeCommitTarget;
 pub type NarrativeEventDto = NarrativeEvent;
 pub type PreviewNarrativeInputDto = NarrativeMessagePreview;
-pub type NarrativeNudgeDto = NarrativeNudge;
 pub type NarrativeSnapshotDto = NarrativeSnapshot;

@@ -1,5 +1,6 @@
 use crate::api::dto::{
-    NarrativeSnapshotDto, OntologyRelationshipKindDto, SyncDebugDto, WorkingMemoryDto,
+    NarrativeSnapshotDto, OntologyRelationshipKindDto, SyncDebugDto, ThreadScopeDto,
+    WorkingMemoryDto,
 };
 use crate::state::narrative::{
     create_snapshot_resource, create_sync_debug_resource, create_working_memory_resource,
@@ -183,8 +184,13 @@ fn render_working_memory(
         None => view! { <p class="muted">"Loading assistant state..."</p> }.into_view(),
         Some(Err(err)) => view! { <p class="error">{err}</p> }.into_view(),
         Some(Ok(memory)) => {
-            let focus = memory.current_focus.as_ref().map(|focus| focus.summary.clone());
+            let focus = memory
+                .current_thread
+                .current_focus
+                .as_ref()
+                .map(|focus| focus.summary.clone());
             let questions = memory
+                .current_thread
                 .open_questions
                 .iter()
                 .map(|question| question.question.clone())
@@ -194,13 +200,31 @@ fn render_working_memory(
                 .iter()
                 .map(|decision| decision.summary.clone())
                 .collect::<Vec<_>>();
+            let sidequests = memory
+                .sidequests
+                .iter()
+                .map(|thread| thread.goal.clone())
+                .collect::<Vec<_>>();
+            let return_thread = memory.return_thread.as_ref().map(|thread| thread.goal.clone());
             let last_action = memory.last_tool_actions.first().cloned();
 
             view! {
                 <div class="inspector-list">
                     <div class="inspector-row">
+                        <strong>"Current thread"</strong>
+                        <p>{memory.current_thread.goal}</p>
+                    </div>
+                    <div class="inspector-row">
                         <strong>"Current focus"</strong>
                         <p>{focus.unwrap_or_else(|| "No active focus yet.".to_string())}</p>
+                    </div>
+                    <div class="inspector-row">
+                        <strong>"Thread scope"</strong>
+                        <p>{thread_scope_label(&memory.current_thread.scope)}</p>
+                    </div>
+                    <div class="inspector-row">
+                        <strong>"Return thread"</strong>
+                        <p>{return_thread.unwrap_or_else(|| "No return thread.".to_string())}</p>
                     </div>
                     <div class="inspector-row">
                         <strong>"Open questions"</strong>
@@ -227,6 +251,18 @@ fn render_working_memory(
                         }}
                     </div>
                     <div class="inspector-row">
+                        <strong>"Sidequests"</strong>
+                        {if sidequests.is_empty() {
+                            view! { <p class="muted">"No parked sidequests."</p> }.into_view()
+                        } else {
+                            view! {
+                                <ul class="inspector-inline-list">
+                                    {sidequests.into_iter().map(|goal| view! { <li>{goal}</li> }).collect_view()}
+                                </ul>
+                            }.into_view()
+                        }}
+                    </div>
+                    <div class="inspector-row">
                         <strong>"Last tool action"</strong>
                         <p>
                             {last_action
@@ -238,6 +274,13 @@ fn render_working_memory(
             }
             .into_view()
         }
+    }
+}
+
+fn thread_scope_label(scope: &ThreadScopeDto) -> &'static str {
+    match scope {
+        ThreadScopeDto::Main => "Main thread",
+        ThreadScopeDto::Sidequest => "Sidequest",
     }
 }
 

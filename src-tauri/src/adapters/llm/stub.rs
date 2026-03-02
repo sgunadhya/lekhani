@@ -1,12 +1,8 @@
 use std::collections::BTreeSet;
 
-use crate::domain::{
-    AssistantIntent, NarrativeCharacter, NarrativeEvent, NarrativeNudge, NarrativeSnapshot,
-    WorkingMemory,
-};
+use crate::domain::{NarrativeCharacter, NarrativeEvent, NarrativeSnapshot, WorkingMemory};
 use crate::ports::{
     AssistantAgent, AssistantResponse, CharacterParser, EventParser, FollowUpDirective,
-    NudgeGenerator,
 };
 use uuid::Uuid;
 
@@ -17,8 +13,13 @@ impl crate::application::DialogueActClassifier for StubNarrativeEngine {
     fn classify(
         &self,
         _context: crate::application::DialogueActContext<'_>,
-    ) -> crate::application::DialogueAct {
-        crate::application::DialogueAct::Brainstorm
+    ) -> crate::application::TurnInterpretation {
+        crate::application::TurnInterpretation {
+            dialogue_act: crate::application::DialogueAct::Brainstorm,
+            target: crate::application::InterpretationTarget::General,
+            route: crate::application::TurnRoute::Continue,
+            confidence: 0.0,
+        }
     }
 }
 
@@ -26,7 +27,7 @@ impl crate::ports::NarrativeProvider for StubNarrativeEngine {
     fn classify_dialogue_act(
         &self,
         context: crate::application::DialogueActContext<'_>,
-    ) -> crate::application::DialogueAct {
+    ) -> crate::application::TurnInterpretation {
         <Self as crate::application::DialogueActClassifier>::classify(self, context)
     }
 }
@@ -51,7 +52,6 @@ impl AssistantAgent for StubNarrativeEngine {
             .map(|focus| focus.summary.as_str())
             .unwrap_or("the current idea");
         Ok(AssistantResponse::FinalReply {
-            intent: AssistantIntent::Guide,
             title: "Idea".to_string(),
             focus_summary: Some(focus.to_string()),
             body: format!(
@@ -68,7 +68,6 @@ impl AssistantAgent for StubNarrativeEngine {
     ) -> Result<AssistantResponse, String> {
         let topic = format!("{:?}", memory.conversation_topic).to_ascii_lowercase();
         Ok(AssistantResponse::FinalReply {
-            intent: AssistantIntent::Guide,
             title: "Idea".to_string(),
             focus_summary: Some(format!("Alternative {} direction", topic)),
             body: format!(
@@ -80,12 +79,11 @@ impl AssistantAgent for StubNarrativeEngine {
 
     fn brainstorm_topic(
         &self,
-        prompt: &str,
+        _prompt: &str,
         memory: &WorkingMemory,
     ) -> Result<AssistantResponse, String> {
         let topic = format!("{:?}", memory.conversation_topic).to_ascii_lowercase();
         Ok(AssistantResponse::FinalReply {
-            intent: AssistantIntent::Guide,
             title: "Idea".to_string(),
             focus_summary: Some(format!("{} direction", topic)),
             body: format!(
@@ -101,7 +99,6 @@ impl AssistantAgent for StubNarrativeEngine {
         _memory: &WorkingMemory,
     ) -> Result<AssistantResponse, String> {
         Ok(AssistantResponse::FinalReply {
-            intent: AssistantIntent::Guide,
             title: "Story Direction".to_string(),
             focus_summary: Some(prompt.trim().to_string()),
             body: format!(
@@ -122,19 +119,10 @@ impl AssistantAgent for StubNarrativeEngine {
             .map(|focus| focus.summary.as_str())
             .unwrap_or("the current idea");
         Ok(AssistantResponse::FinalReply {
-            intent: AssistantIntent::MutateDocument,
             title: "Screenplay Draft".to_string(),
             focus_summary: Some(focus.to_string()),
             body: format!("A scene grows out of {}.", focus),
         })
-    }
-
-    fn generate_nudge(
-        &self,
-        snapshot: &NarrativeSnapshot,
-        _memory: &WorkingMemory,
-    ) -> Result<NarrativeNudge, String> {
-        NudgeGenerator::generate_nudge(self, snapshot)
     }
 }
 
@@ -181,26 +169,6 @@ impl EventParser for StubNarrativeEngine {
             summary: cleaned.clone(),
             participants: infer_event_participants(&cleaned, snapshot),
         })
-    }
-}
-
-impl NudgeGenerator for StubNarrativeEngine {
-    fn generate_nudge(&self, snapshot: &NarrativeSnapshot) -> Result<NarrativeNudge, String> {
-        // In a real agent loop, the agent would analyze the snapshot and backlog.
-        // For the stub, we look for obvious gaps first.
-        let message = if snapshot.characters.is_empty() {
-            "Start by introducing your protagonist. What is their core desire?".to_string()
-        } else if snapshot.events.is_empty() {
-            "Describe an initial event that challenges your protagonist's world.".to_string()
-        } else if snapshot.characters.len() == 1 {
-            "Every hero needs a counter-force. Who opposes or challenges them?".to_string()
-        } else if snapshot.events.iter().all(|event| event.participants.is_empty()) {
-            "Which characters are present in your key events? Linking them helps the model reason.".to_string()
-        } else {
-            "What's the next logical step in the story? A new character, a turning point, or a relationship shift?".to_string()
-        };
-
-        Ok(NarrativeNudge { message })
     }
 }
 

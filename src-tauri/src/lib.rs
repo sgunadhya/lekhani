@@ -12,14 +12,14 @@ use adapters::llm::{
     LmStudioNarrativeEngine, OpenAiCompatibleNarrativeEngine, StubNarrativeEngine,
 };
 use application::{
-    HeuristicAssistantCapabilityPlanner, HeuristicAssistantFallbackResponder,
-    HeuristicBeliefStateUpdater, HeuristicMutationGate, HeuristicResponseStateFinalizer,
+    DeterministicNarrativeEngine, HeuristicAssistantCapabilityPlanner,
+    HeuristicBeliefStateUpdater, HeuristicResponseStateFinalizer,
 };
 use adapters::tauri::{
     apply_narrative_suggestion,
     clear_narrative_state,
     commit_narrative_input, export_fountain_document, get_active_screenplay,
-    get_current_project, get_llm_status, get_narrative_snapshot, get_nudge, get_screenplays,
+    get_current_project, get_llm_status, get_narrative_snapshot, get_screenplays,
     get_sync_debug, get_working_memory,
     get_time, import_fountain_document, open_project_document, parse_character, parse_event,
     preview_narrative_input, save_project_document_as, save_screenplay, submit_assistant_turn,
@@ -108,12 +108,10 @@ pub fn run() {
                 narrative_provider(),
                 Box::new(HeuristicBeliefStateUpdater),
                 Box::new(HeuristicAssistantCapabilityPlanner),
-                Box::new(HeuristicAssistantFallbackResponder),
                 Box::new(HeuristicResponseStateFinalizer),
-                Box::new(HeuristicMutationGate),
+                Box::new(DeterministicNarrativeEngine),
                 narrative_character_parser(),
                 narrative_event_parser(),
-                narrative_nudge_generator(),
             ));
 
             if let Some(project_path) = startup_project_path() {
@@ -147,8 +145,7 @@ pub fn run() {
             apply_narrative_suggestion,
             submit_narrative_turn,
             parse_character,
-            parse_event,
-            get_nudge
+            parse_event
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");
@@ -331,22 +328,6 @@ fn narrative_event_parser() -> Box<dyn ports::EventParser> {
     Box::<StubNarrativeEngine>::default()
 }
 
-fn narrative_nudge_generator() -> Box<dyn ports::NudgeGenerator> {
-    if let Ok(engine) = OpenAiCompatibleNarrativeEngine::new_from_env() {
-        return Box::new(engine);
-    }
-
-    if let Ok(engine) = LmStudioNarrativeEngine::new_from_env() {
-        return Box::new(engine);
-    }
-
-    #[cfg(target_os = "macos")]
-    if let Ok(engine) = FmRsNarrativeEngine::new() {
-        return Box::new(engine);
-    }
-
-    Box::<StubNarrativeEngine>::default()
-}
 
 fn narrative_backend_status() -> (String, String) {
     if let Ok(engine) = OpenAiCompatibleNarrativeEngine::new_from_env() {

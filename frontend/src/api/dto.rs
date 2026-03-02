@@ -50,11 +50,6 @@ pub struct SaveDocumentRequest {
     pub file_path: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ParseDescriptionRequest {
-    pub description: String,
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum NarrativeCommitTargetDto {
     Character,
@@ -127,6 +122,55 @@ pub enum WritePolicyDto {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub enum InterpretationTargetDto {
+    CurrentCandidate,
+    NewTopic(ConversationTopicDto),
+    Screenplay,
+    General,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub enum TurnRouteDto {
+    Continue,
+    ElaborateCurrent,
+    AlternativeCurrent,
+    ConfirmCurrent,
+    RejectCurrent,
+    ShiftToCharacter,
+    ShiftToEvent,
+    AddToScreenplay,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub enum NarrativeModeDto {
+    Idle,
+    Brainstorming,
+    Converging,
+    Elaborating,
+    Committing,
+    TunnelingSidequest,
+    Drifting,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub enum ThreadStatusDto {
+    Active,
+    Drifting,
+    Converging,
+    Stalled,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub enum BeatIdDto {
+    CandidateReady,
+    DriftDetected,
+    ReadyToCommit,
+    Stalled,
+    SidequestOpened,
+    SidequestCloseable,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum ConversationModeDto {
     Brainstorming,
     Refining,
@@ -140,6 +184,19 @@ pub enum ConversationTopicDto {
     Event,
     Relationship,
     General,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub enum NarrativeThreadStatusDto {
+    Active,
+    Parked,
+    Committed,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub enum ThreadScopeDto {
+    Main,
+    Sidequest,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -260,6 +317,20 @@ pub struct StoryTaskDto {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NarrativeThreadDto {
+    pub id: String,
+    pub goal: String,
+    pub status: NarrativeThreadStatusDto,
+    pub thread_status: ThreadStatusDto,
+    pub scope: ThreadScopeDto,
+    pub return_to_thread_id: Option<String>,
+    pub topic: ConversationTopicDto,
+    pub current_focus: Option<FocusItemDto>,
+    pub open_questions: Vec<OpenQuestionDto>,
+    pub turn_count: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolActionRecordDto {
     pub tool_name: String,
     pub summary: String,
@@ -270,9 +341,13 @@ pub struct ToolActionRecordDto {
 pub struct WorkingMemoryDto {
     pub project_id: String,
     pub session_id: String,
+    pub turn_count: u32,
     pub conversation_mode: ConversationModeDto,
     pub conversation_topic: ConversationTopicDto,
     pub current_focus: Option<FocusItemDto>,
+    pub current_thread: NarrativeThreadDto,
+    pub return_thread: Option<NarrativeThreadDto>,
+    pub sidequests: Vec<NarrativeThreadDto>,
     pub constraints: Vec<ConstraintDto>,
     pub story_backlog: Vec<StoryTaskDto>,
     pub open_questions: Vec<OpenQuestionDto>,
@@ -288,8 +363,15 @@ pub struct AssistantTurnDto {
     pub intent: AssistantIntentDto,
     pub capabilities: Vec<AssistantCapabilityDto>,
     pub write_policy: WritePolicyDto,
+    pub interpretation_target: InterpretationTargetDto,
+    pub interpretation_route: TurnRouteDto,
+    pub interpretation_confidence: f32,
     pub reply_title: String,
     pub reply_body: String,
+    pub narrative_mode: NarrativeModeDto,
+    pub thread_status: ThreadStatusDto,
+    pub active_beat: Option<BeatIdDto>,
+    pub evaluation_nudge: Option<String>,
     pub committed: PreviewNarrativeInputDto,
     pub working_memory: WorkingMemoryDto,
     pub suggested_actions: Vec<NarrativeSuggestedActionViewDto>,
@@ -301,6 +383,9 @@ pub enum NarrativeSuggestionActionDto {
     TryAnother,
     ExpandThis,
     AddToScreenplay,
+    ParkThread,
+    ResumeThread,
+    CommitSidequest,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -437,11 +522,6 @@ pub struct NarrativeEventDto {
     pub title: String,
     pub summary: String,
     pub participants: Vec<Uuid>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct NarrativeNudgeDto {
-    pub message: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
